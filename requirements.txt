@@ -1,14 +1,31 @@
-torch>=2.1.0
-torchaudio>=2.1.0
-transformers>=4.38.0
-auto-gptq>=0.6.0
-gradio>=4.0.0
-pydantic>=2.0.0
-accelerate>=0.25.0
-sentencepiece>=0.1.99
-soundfile>=0.12.1
+# Core dependencies
+torch>=2.3.1
+torchaudio>=2.3.1
 numpy<2.0.0
 
-# CosyVoice - install from source:
-# git clone https://github.com/FunAudioLLM/CosyVoice.git
-# cd CosyVoice && pip install -e .
+# ModelScope ecosystem
+modelscope>=1.11.0
+addict>=2.4.0
+sortedcontainers>=2.4.0
+datasets<3.0.0
+
+# LLM & Transformers
+transformers>=4.38.0
+tokenizers>=0.15.0
+sentencepiece>=0.1.99
+protobuf>=3.20.0
+accelerate>=0.25.0
+
+# TTS dependencies (optional - currently disabled due to kantts issues)
+scipy>=1.10.0
+soundfile>=0.12.1
+
+# UI & API - Use fully stable older version
+gradio==6.2.0
+
+# Data & Utils
+pydantic>=2.0.0
+requests>=2.31.0
+tqdm>=4.66.0
+pyyaml>=6.0
+pillow>=10.0.0

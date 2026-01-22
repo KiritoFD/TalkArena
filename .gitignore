@@ -1,0 +1,3 @@
+*.safetensors
+*.zip
+*.pt

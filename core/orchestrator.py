@@ -1,175 +1,153 @@
 import json
+import uuid
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from model_loader import LLMLoader, TTSLoader
 
-from .structs import (
-    AgentProfile,
-    SessionState,
-    DialogueTurn,
-    EmotionMetadata,
-    compute_dominance_delta,
-    clamp_dominance,
-)
-from .llm_engine import LLMEngine, EMOTION_INSTRUCTION
-from .tts_engine import create_tts_engine
+@dataclass
+class Turn:
+    text: str
+    audio_path: str = None
+    emotion: str = "neutral"
 
+@dataclass
+class Session:
+    session_id: str
+    scenario_id: str
+    user_name: str
+    ai_name: str
+    user_dominance: int
+    ai_dominance: int
+    chat_history: List[Tuple[str, str]]
 
 class Orchestrator:
-    def __init__(
-        self,
-        llm_engine: Optional[LLMEngine] = None,
-        tts_engine = None,
-        agents_config_path: str = "data/default_agents.json",
-        enable_tts: bool = True,
-    ):
-        self.llm_engine = llm_engine or LLMEngine()
-        self.tts_engine = tts_engine if tts_engine else (create_tts_engine() if enable_tts else None)
-        self.agents_config_path = Path(agents_config_path)
-        self.scenarios: Dict[str, dict] = {}
-        self.sessions: Dict[str, SessionState] = {}
+    def __init__(self, enable_tts: bool = True):
+        self.llm = LLMLoader()
+        self.tts = TTSLoader() if enable_tts else None
+        self.sessions: Dict[str, Session] = {}
+        self.scenarios = self._load_scenarios()
         
-        self._load_scenarios()
+        print("[Orchestrator] 初始化模型加载器...")
+        self.llm.load()
+        if self.tts:
+            self.tts.load()
     
-    def _load_scenarios(self):
-        if self.agents_config_path.exists():
-            with open(self.agents_config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                for scenario in data.get("scenarios", []):
-                    self.scenarios[scenario["scenario_id"]] = scenario
+    def _load_scenarios(self) -> Dict:
+        return {
+            "negotiation": {
+                "name": "商务谈判",
+                "ai_name": "王总",
+                "user_prompt": "你是一位商务代表",
+                "ai_prompt": "你是一位强势的商业谈判对手"
+            },
+            "debate": {
+                "name": "辩论赛",
+                "ai_name": "对手",
+                "user_prompt": "你是辩手，立场是正方",
+                "ai_prompt": "你是辩手，立场是反方，性格犀利"
+            },
+            "interview": {
+                "name": "面试官",
+                "ai_name": "面试官",
+                "user_prompt": "你是求职者",
+                "ai_prompt": "你是面试官，需要严格评估候选人"
+            }
+        }
     
     def get_scenario_list(self) -> List[Tuple[str, str]]:
-        """Return list of (scenario_id, display_name) tuples."""
-        return [(sid, s["name"]) for sid, s in self.scenarios.items()]
+        return [(k, v["name"]) for k, v in self.scenarios.items()]
     
-    def start_session(self, scenario_id: str) -> SessionState:
-        scenario = self.scenarios.get(scenario_id)
-        if not scenario:
-            raise ValueError(f"Scenario '{scenario_id}' not found")
+    def start_session(self, scenario_id: str) -> Session:
+        if scenario_id not in self.scenarios:
+            raise ValueError(f"Unknown scenario: {scenario_id}")
         
-        agents = [AgentProfile(**agent_data) for agent_data in scenario["agents"]]
+        scenario = self.scenarios[scenario_id]
+        session_id = str(uuid.uuid4())
         
-        session = SessionState(
+        session = Session(
+            session_id=session_id,
             scenario_id=scenario_id,
-            agents=agents,
+            user_name="你",
+            ai_name=scenario["ai_name"],
+            user_dominance=50,
+            ai_dominance=50,
+            chat_history=[]
         )
-        session.initialize_dominance()
         
-        self.sessions[session.session_id] = session
+        self.sessions[session_id] = session
+        
+        # AI开场白
+        opening = f"我是{scenario['ai_name']}，很高兴见到你。准备好了吗？"
+        session.chat_history.append(("系统", opening))
+        
         return session
     
-    def get_session(self, session_id: str) -> Optional[SessionState]:
-        return self.sessions.get(session_id)
-    
-    def process_turn(
-        self,
-        session_id: str,
-        user_input: str,
-        user_agent_id: Optional[str] = None,
-    ) -> Tuple[DialogueTurn, DialogueTurn]:
-        """Process a turn: user input -> AI response. Returns (user_turn, ai_turn)."""
-        session = self.sessions.get(session_id)
-        if not session:
-            raise ValueError(f"Session '{session_id}' not found")
+    def process_turn(self, session_id: str, user_input: str) -> Tuple[Turn, Turn]:
+        if session_id not in self.sessions:
+            raise ValueError(f"Session not found: {session_id}")
         
-        user_agent = None
-        ai_agent = None
-        for agent in session.agents:
-            if user_agent_id and agent.agent_id == user_agent_id:
-                user_agent = agent
-            elif not user_agent_id and agent.role in ["user", "求职者", "应聘者", "丈夫", "妻子"]:
-                user_agent = agent
-            else:
-                ai_agent = agent
+        session = self.sessions[session_id]
+        scenario = self.scenarios[session.scenario_id]
         
-        if not ai_agent:
-            ai_agent = session.agents[0]
-        if not user_agent:
-            user_agent = session.agents[1] if len(session.agents) > 1 else session.agents[0]
+        # 更新用户气场
+        session.user_dominance = min(100, session.user_dominance + 2)
         
-        user_turn = DialogueTurn(
-            speaker=user_agent.agent_id,
-            speaker_name=user_agent.name,
-            text=user_input,
-        )
-        session.history.append(user_turn)
+        # 生成AI回复
+        context = "\n".join([f"{name}: {text}" for name, text in session.chat_history[-4:]])
+        prompt = f"{scenario['ai_prompt']}\n\n对话记录:\n{context}\n\n你的回复:"
         
-        system_prompt = self._build_system_prompt(ai_agent, session)
-        history_for_llm = self._format_history_for_llm(session.history[:-1], ai_agent.agent_id)
+        ai_text = self.llm.generate(prompt, max_length=150)
         
-        raw_response = self.llm_engine.generate(
-            user_input=user_input,
-            system_prompt=system_prompt,
-            history=history_for_llm,
-        )
+        # 情感分析（简单版）
+        emotion = self._analyze_emotion(ai_text)
         
-        clean_text, emotion = LLMEngine.parse_emotion(raw_response)
-        
-        dominance_delta = compute_dominance_delta(emotion)
-        old_dominance = session.current_dominance.get(ai_agent.agent_id, 50.0)
-        new_dominance = clamp_dominance(old_dominance + dominance_delta)
-        session.current_dominance[ai_agent.agent_id] = new_dominance
-        
-        user_dominance = session.current_dominance.get(user_agent.agent_id, 50.0)
-        user_new_dominance = clamp_dominance(user_dominance - dominance_delta * 0.5)
-        session.current_dominance[user_agent.agent_id] = user_new_dominance
-        
+        # TTS合成
         audio_path = None
-        if self.tts_engine:
-            try:
-                audio_path = self.tts_engine.synthesize(
-                    text=clean_text,
-                    speaker_id=ai_agent.tts_speaker_id,
-                )
-            except Exception as e:
-                print(f"TTS synthesis failed: {e}")
+        if self.tts:
+            audio = self.tts.synthesize(ai_text, emotion=emotion)
+            if audio:
+                audio_path = self._save_audio(session_id, audio)
         
-        ai_turn = DialogueTurn(
-            speaker=ai_agent.agent_id,
-            speaker_name=ai_agent.name,
-            text=clean_text,
-            emotion=emotion,
-            dominance_delta=dominance_delta,
-            audio_path=audio_path,
-        )
-        session.history.append(ai_turn)
-        session.turn_count += 1
+        # 更新AI气场
+        session.ai_dominance = min(100, session.ai_dominance + 1)
+        
+        # 记录到历史
+        session.chat_history.append((session.user_name, user_input))
+        session.chat_history.append((session.ai_name, ai_text))
+        
+        user_turn = Turn(text=user_input)
+        ai_turn = Turn(text=ai_text, audio_path=audio_path, emotion=emotion)
         
         return user_turn, ai_turn
     
-    def _build_system_prompt(self, agent: AgentProfile, session: SessionState) -> str:
-        base_prompt = agent.system_prompt
-        traits_str = "、".join(agent.personality_traits) if agent.personality_traits else "无特殊设定"
-        
-        prompt = f"""{base_prompt}
-
-你的性格特点：{traits_str}
-当前气场值：{session.current_dominance.get(agent.agent_id, 50):.1f}/100
-
-{EMOTION_INSTRUCTION}"""
-        
-        return prompt
+    def _analyze_emotion(self, text: str) -> str:
+        """简单的情感分析"""
+        if any(w in text for w in ["！", "很好", "棒", "太好"]):
+            return "happy"
+        elif any(w in text for w in ["？", "不", "错"]):
+            return "neutral"
+        elif any(w in text for w in ["呃", "嗯", "不过"]):
+            return "sad"
+        return "neutral"
     
-    def _format_history_for_llm(self, history: List[DialogueTurn], ai_agent_id: str) -> List[dict]:
-        formatted = []
-        for turn in history[-10:]:
-            formatted.append({
-                "text": turn.text,
-                "is_ai": turn.speaker == ai_agent_id,
-            })
-        return formatted
-    
-    def get_dominance_display(self, session_id: str) -> Dict[str, float]:
-        session = self.sessions.get(session_id)
-        if not session:
-            return {}
+    def _save_audio(self, session_id: str, audio_data) -> str:
+        from pathlib import Path
+        import shutil
         
-        result = {}
-        for agent in session.agents:
-            result[agent.name] = session.current_dominance.get(agent.agent_id, 50.0)
-        return result
-    
-    def cleanup(self):
-        if self.llm_engine:
-            self.llm_engine.unload()
-        if self.tts_engine:
-            self.tts_engine.unload()
+        audio_dir = Path("outputs/audio") / session_id
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = audio_dir / f"response_{len(self.sessions[session_id].chat_history)}.wav"
+        
+        # 如果是文件路径，复制文件
+        if isinstance(audio_data, str) and os.path.exists(audio_data):
+            shutil.copy(audio_data, audio_path)
+        # 如果是字节数据，直接写入
+        elif isinstance(audio_data, bytes):
+            with open(audio_path, "wb") as f:
+                f.write(audio_data)
+        else:
+            return None
+        
+        return str(audio_path)
