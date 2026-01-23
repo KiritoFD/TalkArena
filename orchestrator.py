@@ -436,3 +436,88 @@ class Orchestrator:
         if enable_tts is None:
             return not env_disabled
         return enable_tts
+    
+    def end_session_with_summary(self, session_id: str) -> Tuple[str, str]:
+        """结束对决，生成总结、建议并保存文件"""
+        if session_id not in self.sessions:
+            raise ValueError(f"Session not found: {session_id}")
+        
+        session = self.sessions[session_id]
+        scenario = self.scenarios[session.scenario_id]
+        
+        # 构建对话记录
+        dialogue = "\n".join([f"{name}: {text}" for name, text in session.chat_history])
+        
+        # 计算结果
+        if session.user_dominance > 60:
+            result = "🏆 用户胜出"
+        elif session.user_dominance < 40:
+            result = "💢 AI 胜出"
+        else:
+            result = "🤝 势均力敌"
+        
+        # 让 LLM 生成总结
+        summary_prompt = f"""你是一位专业的沟通教练。分析以下对决并给出详细点评和改进建议。
+
+【场景】{scenario['name']}
+【对手】{scenario['ai_name']}
+【最终气场】用户 {session.user_dominance} vs AI {session.ai_dominance}
+【回合数】{session.turn_count}
+
+【对话记录】
+{dialogue}
+
+请输出（严格按以下格式）：
+
+## 🎯 对决结果
+[{result}，最终气场比分]
+
+## 📊 表现分析
+- 优势: [列举2-3个亮点]
+- 不足: [列举2-3个问题]
+
+## 🔑 关键回合复盘
+[指出1-2个关键转折点，分析为什么赢/输]
+
+## 💡 改进建议
+[给出3条具体可操作的建议]"""
+        
+        summary = self.llm.generate(summary_prompt, max_new_tokens=800)
+        
+        logger.info("=" * 60)
+        logger.info(f"[SESSION {session_id}] 对决结束")
+        logger.info(f"  结果: {result}")
+        logger.info(f"  最终气场: 用户 {session.user_dominance} vs AI {session.ai_dominance}")
+        logger.info(f"  总回合数: {session.turn_count}")
+        logger.info("=" * 60)
+        
+        # 保存对决记录
+        file_content = f"""# TalkArena 对决记录
+
+## 基本信息
+- 场景: {scenario['name']}
+- 对手: {scenario['ai_name']}
+- 回合数: {session.turn_count}
+- 最终气场: 用户 {session.user_dominance} vs AI {session.ai_dominance}
+- 结果: {result}
+
+## 对话记录
+{dialogue}
+
+## 总结与建议
+{summary}
+"""
+        
+        output_dir = Path("outputs/sessions")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        file_path = output_dir / f"{session_id}_summary.md"
+        
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(file_content)
+        
+        logger.info(f"[保存] 对决记录: {file_path}")
+        
+        # 清理 session
+        del self.sessions[session_id]
+        
+        return summary, str(file_path)

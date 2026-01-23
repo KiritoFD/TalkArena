@@ -1,0 +1,13 @@
+2026-01-23 13:29:29,590 [INFO] Handlers 初始化模型...
+2026-01-23 13:29:29,590 [INFO] ============================================================
+2026-01-23 13:29:29,590 [INFO] TalkArena Orchestrator 初始化
+2026-01-23 13:29:29,591 [INFO] ============================================================
+2026-01-23 13:29:29,591 [INFO] 加载 LLM 模型...
+2026-01-23 13:29:43,542 [INFO] 加载 TTS 模型...
+2026-01-23 13:29:44,781 [INFO] 加载 STT 模型...
+2026-01-23 13:29:45,234 [INFO] [STT] Vosk 离线模型加载成功
+2026-01-23 13:29:45,234 [INFO] Handlers 模型初始化完成
+2026-01-23 13:29:47,673 [INFO] HTTP Request: GET http://localhost:1234/gradio_api/startup-events "HTTP/1.1 200 OK"
+2026-01-23 13:29:47,702 [INFO] HTTP Request: HEAD http://localhost:1234/ "HTTP/1.1 200 OK"
+2026-01-23 13:29:48,323 [INFO] HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2026-01-23 13:29:50,613 [INFO] HTTP Request: GET https://api.gradio.app/v3/tunnel-request "HTTP/1.1 200 OK"

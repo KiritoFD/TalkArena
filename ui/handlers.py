@@ -1,5 +1,6 @@
 from typing import List, Tuple, Generator
 from orchestrator import Orchestrator, logger
+import gradio as gr
 
 _orchestrator_instance = None
 
@@ -91,3 +92,28 @@ def send_message(session_id: str, user_input: str, chat_history: List) -> Genera
             chat_history.append({"role": "assistant", "content": display_text})
             
             yield chat_history, "", ai_dom, user_dom, audio_path
+
+def end_session(session_id: str, chat_history: List):
+    """结束对决，生成总结和建议"""
+    if not session_id:
+        return gr.update(visible=False), gr.update(visible=False), "❌ 请先开始对决"
+    
+    orch = get_orchestrator()
+    
+    if session_id not in orch.sessions:
+        return gr.update(visible=False), gr.update(visible=False), "❌ 对决已结束或不存在"
+    
+    # 生成总结
+    summary, file_path = orch.end_session_with_summary(session_id)
+    
+    summary_md = f"""
+### 🏆 对决总结
+
+{summary}
+"""
+    
+    return (
+        gr.update(value=summary_md, visible=True),
+        gr.update(value=file_path, visible=True),
+        "🏁 对决已结束"
+    )

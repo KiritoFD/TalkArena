@@ -6,12 +6,12 @@ import os
 print("[TalkArena] 正在导入模块...")
 
 try:
-    from ui.handlers import get_scenarios, start_session, send_message, process_voice_input, init_models
+    from ui.handlers import get_scenarios, start_session, send_message, process_voice_input, end_session, init_models
     from ui.theme import CUSTOM_CSS, CUSTOM_THEME
 except ImportError as e:
     print(f"[TalkArena] 导入失败: {e}")
     os.system(f"{sys.executable} -m pip install torch transformers modelscope gradio SpeechRecognition -q")
-    from ui.handlers import get_scenarios, start_session, send_message, process_voice_input, init_models
+    from ui.handlers import get_scenarios, start_session, send_message, process_voice_input, end_session, init_models
     from ui.theme import CUSTOM_CSS, CUSTOM_THEME
 
 def create_ui():
@@ -31,7 +31,9 @@ def create_ui():
                     value=None,
                     type="value"
                 )
-                start_btn = gr.Button("⚔️ 开始对决", variant="primary")
+                with gr.Row():
+                    start_btn = gr.Button("⚔️ 开始对决", variant="primary", scale=2)
+                    end_btn = gr.Button("🏁 结束对决", variant="stop", scale=1)
                 status_text = gr.Markdown("选择场景后点击开始")
                 
                 gr.Markdown("### 📊 气场对决 (总和100)")
@@ -44,6 +46,10 @@ def create_ui():
                 - _对方思考也会掉气场_
                 - _裁判实时评判每轮交锋_
                 """)
+                
+                # 对局总结区域
+                summary_box = gr.Markdown("", visible=False)
+                download_btn = gr.File(label="💾 下载对局记录", visible=False)
             
             with gr.Column(scale=2):
                 chatbot = gr.Chatbot(height=400, elem_classes="chat-container")
@@ -88,6 +94,13 @@ def create_ui():
             process_voice_input,
             [session_id, voice_input, chatbot],
             [chatbot, user_input, ai_dominance, user_dominance, audio_output]
+        )
+        
+        # 结束对决
+        end_btn.click(
+            end_session,
+            [session_id, chatbot],
+            [summary_box, download_btn, status_text]
         )
     
     return demo
