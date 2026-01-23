@@ -2,55 +2,127 @@ from pathlib import Path
 from config.models import MODELS_CONFIG
 
 class LLMLoader:
+    # 魔搭 API-Inference 配置
+    API_BASE_URL = "https://api-inference.modelscope.cn/v1/"
+    API_KEY = "ms-0cf515d7-87f9-4a63-b9bb-2c35c574674a"
+    MODELS_TO_TRY = [
+        "ZhipuAI/GLM-4.7-Flash",
+        "Qwen/Qwen3-8B",
+        "Qwen/Qwen3-32B",
+        "Qwen/Qwen2.5-7B-Instruct",
+    ]
+    
     def __init__(self):
-        self.model = None
-        self.tokenizer = None
+        self.client = None
+        self.model_name = None
+        self.use_api = False
+        # 本地模型 fallback
+        self.local_model = None
+        self.local_tokenizer = None
         
     def load(self):
-        print("[LLMLoader] 正在下载 Qwen2.5-3B 模型...")
+        """加载 LLM，优先使用魔搭 API"""
+        # 尝试魔搭 API
+        print("[LLMLoader] 尝试连接魔搭 API-Inference...")
+        
+        from openai import OpenAI
+        
+        self.client = OpenAI(
+            base_url=self.API_BASE_URL,
+            api_key=self.API_KEY
+        )
+        
+        # 依次尝试模型
+        for model in self.MODELS_TO_TRY:
+            print(f"[LLMLoader] 测试模型: {model}")
+            if self._test_model(model):
+                self.model_name = model
+                self.use_api = True
+                print(f"[LLMLoader] ✓ 使用魔搭 API: {model}")
+                return
+        
+        # API 全部失败，回退到本地模型
+        print("[LLMLoader] API 模型均不可用，回退到本地模型...")
+        self._load_local_model()
+    
+    def _test_model(self, model: str) -> bool:
+        """测试模型是否可用"""
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "你好"}],
+                max_tokens=10,
+                timeout=10
+            )
+            return response.choices[0].message.content is not None
+        except Exception as e:
+            print(f"[LLMLoader] {model} 不可用: {e}")
+            return False
+    
+    def _load_local_model(self):
+        """加载本地模型"""
+        print("[LLMLoader] 加载本地 Qwen2.5-3B 模型...")
         from modelscope import AutoModelForCausalLM, AutoTokenizer
         
         config = MODELS_CONFIG["llm"]
         
-        print(f"[LLMLoader] 下载tokenizer...")
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.local_tokenizer = AutoTokenizer.from_pretrained(
             config["model_id"],
             cache_dir=config["cache_dir"],
             trust_remote_code=True
         )
         
-        print(f"[LLMLoader] 下载模型文件 (这可能需要几分钟)...")
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.local_model = AutoModelForCausalLM.from_pretrained(
             config["model_id"],
             cache_dir=config["cache_dir"],
             device_map="cpu",
             trust_remote_code=True,
             low_cpu_mem_usage=True
         )
-        print("[LLMLoader] ✓ Qwen2.5-3B 模型加载成功")
+        self.use_api = False
+        print("[LLMLoader] ✓ 本地模型加载成功")
     
     def generate(self, text: str, max_new_tokens: int = 2000, temperature: float = 0.7) -> str:
+        """生成回复"""
+        if self.use_api:
+            return self._generate_api(text, max_new_tokens, temperature)
+        else:
+            return self._generate_local(text, max_new_tokens, temperature)
+    
+    def _generate_api(self, text: str, max_new_tokens: int, temperature: float) -> str:
+        """使用魔搭 API 生成"""
+        response = self.client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": text}],
+            max_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=0.9
+        )
+        return response.choices[0].message.content.strip()
+    
+    def _generate_local(self, text: str, max_new_tokens: int, temperature: float) -> str:
+        """使用本地模型生成"""
         messages = [{"role": "user", "content": text}]
-        inputs = self.tokenizer.apply_chat_template(
+        inputs = self.local_tokenizer.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=True,
             return_tensors="pt"
         )
         
-        attention_mask = (inputs != self.tokenizer.pad_token_id).long()
+        attention_mask = (inputs != self.local_tokenizer.pad_token_id).long()
         
-        outputs = self.model.generate(
+        outputs = self.local_model.generate(
             inputs,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             top_p=0.9,
             do_sample=True,
-            pad_token_id=self.tokenizer.eos_token_id
+            pad_token_id=self.local_tokenizer.eos_token_id
         )
         
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        response = self.local_tokenizer.decode(outputs[0], skip_special_tokens=True)
         return response.split("assistant\n")[-1].strip() if "assistant" in response else response
 
 class TTSLoader:
