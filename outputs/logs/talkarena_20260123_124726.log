@@ -1,0 +1,24 @@
+2026-01-23 12:47:26,230 [INFO] Handlers 初始化模型...
+2026-01-23 12:47:26,231 [INFO] ============================================================
+2026-01-23 12:47:26,231 [INFO] TalkArena Orchestrator 初始化
+2026-01-23 12:47:26,231 [INFO] ============================================================
+2026-01-23 12:47:26,231 [INFO] 加载 LLM 模型...
+2026-01-23 12:47:38,059 [INFO] 加载 TTS 模型...
+2026-01-23 12:47:39,076 [INFO] 加载 STT 模型...
+2026-01-23 12:47:39,472 [INFO] [STT] Vosk 离线模型加载成功
+2026-01-23 12:47:39,472 [INFO] Handlers 模型初始化完成
+2026-01-23 12:47:41,399 [INFO] HTTP Request: GET http://localhost:1234/gradio_api/startup-events "HTTP/1.1 200 OK"
+2026-01-23 12:47:41,420 [INFO] HTTP Request: HEAD http://localhost:1234/ "HTTP/1.1 200 OK"
+2026-01-23 12:47:42,863 [INFO] HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
+2026-01-23 12:47:43,404 [INFO] HTTP Request: GET https://api.gradio.app/v3/tunnel-request "HTTP/1.1 200 OK"
+2026-01-23 12:49:25,337 [INFO] ============================================================
+2026-01-23 12:49:25,338 [INFO] [SESSION 02cc1ec3] 新对局开始
+2026-01-23 12:49:25,338 [INFO]   场景: 辩论赛
+2026-01-23 12:49:25,339 [INFO]   AI角色: 反方辩手
+2026-01-23 12:49:25,339 [INFO]   初始气场: 用户 50 vs AI 50
+2026-01-23 12:49:25,339 [INFO] ============================================================
+2026-01-23 12:49:46,072 [INFO] [语音输入] 收到音频: C:\Users\xy\AppData\Local\Temp\gradio\c0f813402de4df913d59ef88588b5ba5f5a8edfb77bbda8af46bf862705a8b19\audio.wav, session: 02cc1ec3
+2026-01-23 12:49:46,073 [INFO] [STT] 转录音频: C:\Users\xy\AppData\Local\Temp\gradio\c0f813402de4df913d59ef88588b5ba5f5a8edfb77bbda8af46bf862705a8b19\audio.wav
+2026-01-23 12:49:46,909 [INFO] [STT] 转录结果: 
+2026-01-23 12:49:46,916 [INFO] [语音输入] 转录成功: 
+2026-01-23 12:49:46,916 [WARNING] [语音输入] 转录结果为空

@@ -35,22 +35,26 @@ def start_session(scenario_id: str):
     return session.session_id, chat_history, status, session.ai_dominance, session.user_dominance
 
 def process_voice_input(session_id: str, audio_file, chat_history: List) -> Generator:
+    logger.info(f"[语音输入] 收到音频: {audio_file}, session: {session_id}")
+    
     if not session_id:
+        logger.warning("[语音输入] 无session")
         yield chat_history, "", 50, 50, None
         return
     
     if audio_file is None:
+        logger.warning("[语音输入] 音频文件为None")
         yield chat_history, "", 50, 50, None
         return
     
     orch = get_orchestrator()
     
-    try:
-        user_text = orch.transcribe_audio(audio_file)
-        logger.info(f"[语音输入] 转录成功: {user_text}")
-    except Exception as e:
-        logger.error(f"[语音输入] 转录失败: {e}")
-        yield chat_history, f"语音识别失败: {e}", 50, 50, None
+    user_text = orch.transcribe_audio(audio_file)
+    logger.info(f"[语音输入] 转录成功: {user_text}")
+    
+    if not user_text.strip():
+        logger.warning("[语音输入] 转录结果为空")
+        yield chat_history, "", 50, 50, None
         return
     
     yield from send_message(session_id, user_text, chat_history)

@@ -67,6 +67,7 @@ class TTSLoader:
     def synthesize(self, text: str, emotion: str = "neutral", voice: str = None) -> bytes:
         import asyncio
         import io
+        from pydub import AudioSegment
         
         resolved_voice = voice or self._emotion_to_voice(emotion)
         print(f"[TTSLoader] 合成语音: {text[:50]}...")
@@ -79,7 +80,15 @@ class TTSLoader:
                     audio_data += chunk["data"]
             return audio_data
         
-        wav_bytes = asyncio.run(_synthesize())
+        mp3_bytes = asyncio.run(_synthesize())
+        
+        # MP3 转 WAV
+        mp3_io = io.BytesIO(mp3_bytes)
+        audio = AudioSegment.from_mp3(mp3_io)
+        wav_io = io.BytesIO()
+        audio.export(wav_io, format="wav")
+        wav_bytes = wav_io.getvalue()
+        
         print(f"[TTSLoader] ✓ 合成成功，音频大小: {len(wav_bytes)} bytes")
         return wav_bytes
 

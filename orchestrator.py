@@ -70,25 +70,88 @@ class Orchestrator:
             logger.info("TTS/STT 已禁用")
     
     def _init_stt(self):
-        try:
-            import speech_recognition as sr
-            self.stt = sr.Recognizer()
-            logger.info("STT (speech_recognition) 加载成功")
-        except ImportError:
-            logger.warning("speech_recognition 未安装，语音输入不可用")
-            self.stt = None
+        """初始化 Vosk 离线语音识别"""
+        from pathlib import Path
+        
+        model_path = Path("models/vosk-model-small-cn-0.22")
+        
+        if not model_path.exists():
+            logger.info("[STT] 下载 Vosk 中文模型...")
+            import urllib.request
+            import zipfile
+            
+            model_url = "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip"
+            zip_path = Path("models/vosk-model.zip")
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            urllib.request.urlretrieve(model_url, zip_path)
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall("models")
+            
+            zip_path.unlink()
+            logger.info("[STT] Vosk 模型下载完成")
+        
+        from vosk import Model
+        self.stt = Model(str(model_path))
+        logger.info("[STT] Vosk 离线模型加载成功")
     
     def transcribe_audio(self, audio_path: str) -> str:
+        """使用 Vosk 离线转录音频"""
         if not self.stt:
             raise RuntimeError("STT 未初始化")
         
-        import speech_recognition as sr
+        import wave
+        import json
+        import io
+        from vosk import KaldiRecognizer
+        from pathlib import Path
+        
         logger.info(f"[STT] 转录音频: {audio_path}")
         
-        with sr.AudioFile(audio_path) as source:
-            audio = self.stt.record(source)
+        # 检查并转换音频格式
+        with open(audio_path, "rb") as f:
+            header = f.read(12)
         
-        text = self.stt.recognize_google(audio, language="zh-CN")
+        is_wav = header[:4] == b"RIFF" and header[8:12] == b"WAVE"
+        
+        if not is_wav:
+            from pydub import AudioSegment
+            logger.info("[STT] 转换音频格式...")
+            
+            suffix = Path(audio_path).suffix.lower()
+            if suffix == ".mp3" or header[:2] in (b"\xff\xfb", b"\xff\xf3"):
+                audio = AudioSegment.from_mp3(audio_path)
+            else:
+                audio = AudioSegment.from_file(audio_path)
+            
+            # 转换为 16kHz 单声道 WAV（Vosk 要求）
+            audio = audio.set_frame_rate(16000).set_channels(1)
+            wav_io = io.BytesIO()
+            audio.export(wav_io, format="wav")
+            wav_io.seek(0)
+            wf = wave.open(wav_io, "rb")
+        else:
+            wf = wave.open(audio_path, "rb")
+        
+        rec = KaldiRecognizer(self.stt, wf.getframerate())
+        rec.SetWords(True)
+        
+        result_text = ""
+        while True:
+            data = wf.readframes(4000)
+            if len(data) == 0:
+                break
+            if rec.AcceptWaveform(data):
+                result = json.loads(rec.Result())
+                result_text += result.get("text", "")
+        
+        final_result = json.loads(rec.FinalResult())
+        result_text += final_result.get("text", "")
+        
+        wf.close()
+        
+        text = result_text.strip()
         logger.info(f"[STT] 转录结果: {text}")
         return text
     
@@ -368,8 +431,8 @@ class Orchestrator:
         return str(audio_path)
     
     def _resolve_tts_flag(self, enable_tts: Optional[bool]) -> bool:
-        env_flag = os.environ.get("TTS_ENABLED", "")
-        env_enabled = env_flag.lower() in {"1", "true", "yes", "on"}
+        env_flag = os.environ.get("TTS_ENABLED", "1")  # 默认开启
+        env_disabled = env_flag.lower() in {"0", "false", "no", "off"}
         if enable_tts is None:
-            return env_enabled
+            return not env_disabled
         return enable_tts

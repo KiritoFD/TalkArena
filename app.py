@@ -58,9 +58,9 @@ def create_ui():
                 
                 with gr.Row():
                     voice_input = gr.Audio(
-                        sources=["microphone"],
+                        sources=["microphone", "upload"],
                         type="filepath",
-                        label="🎤 语音输入（录音后自动发送）"
+                        label="🎤 语音输入（录音或上传）"
                     )
                 
                 audio_output = gr.Audio(label="🔊 对方回复", autoplay=True)
@@ -83,7 +83,8 @@ def create_ui():
             [chatbot, user_input, ai_dominance, user_dominance, audio_output]
         )
         
-        voice_input.stop_recording(
+        # 录音完成后触发
+        voice_input.change(
             process_voice_input,
             [session_id, voice_input, chatbot],
             [chatbot, user_input, ai_dominance, user_dominance, audio_output]
