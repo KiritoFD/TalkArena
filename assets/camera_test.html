@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>摄像头测试</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f0f0f0; }
+        .container { max-width: 640px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }
+        h1 { color: #333; }
+        video { width: 100%; max-width: 320px; border: 2px solid #667eea; border-radius: 8px; }
+        .btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; }
+        .btn-start { background: #667eea; color: white; }
+        .btn-stop { background: #ff6b6b; color: white; }
+        #status { margin: 10px 0; padding: 10px; border-radius: 5px; }
+        .error { background: #ffcccc; color: #cc0000; }
+        .success { background: #ccffcc; color: #006600; }
+        select { padding: 8px; font-size: 14px; width: 100%; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📷 摄像头测试</h1>
+        
+        <p><strong>步骤：</strong></p>
+        <ol>
+            <li>在下方选择摄像头设备</li>
+            <li>点击"开启摄像头"</li>
+            <li>允许浏览器访问摄像头的请求</li>
+        </ol>
+        
+        <h3>选择设备</h3>
+        <select id="cameraList">
+            <option value="">-- 点击下方按钮获取设备列表 --</option>
+        </select>
+        
+        <h3>视频预览</h3>
+        <video id="video" autoplay playsinline muted></video>
+        
+        <div style="margin: 15px 0;">
+            <button class="btn btn-start" onclick="startCamera()">📷 开启摄像头</button>
+            <button class="btn btn-stop" onclick="stopCamera()">⏹️ 停止</button>
+        </div>
+        
+        <div id="status"></div>
+        
+        <h3>日志</h3>
+        <div id="log" style="background: #f5f5f5; padding: 10px; border-radius: 5px; font-size: 12px; max-height: 200px; overflow-y: auto;"></div>
+    </div>
+
+    <script>
+        let stream = null;
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const logDiv = document.getElementById('log');
+        
+        function log(msg) {
+            const time = new Date().toLocaleTimeString();
+            logDiv.innerHTML = `[${time}] ${msg}<br>` + logDiv.innerHTML;
+        }
+        
+        function showStatus(msg, type) {
+            status.innerHTML = msg;
+            status.className = type;
+        }
+        
+        async function getDevices() {
+            log('正在获取设备列表...');
+            try {
+                // 先请求权限才能获取设备标签
+                await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const cameras = devices.filter(d => d.kind === 'videoinput');
+                const mics = devices.filter(d => d.kind === 'audioinput');
+                
+                const select = document.getElementById('cameraList');
+                select.innerHTML = '';
+                
+                cameras.forEach((cam, i) => {
+                    const opt = document.createElement('option');
+                    opt.value = cam.deviceId;
+                    opt.text = cam.label || `摄像头 ${i + 1}`;
+                    select.appendChild(opt);
+                });
+                
+                log(`找到 ${cameras.length} 个摄像头, ${mics.length} 个麦克风`);
+                showStatus(`找到 ${cameras.length} 个摄像头`, 'success');
+                
+                // 如果只有一个摄像头，直接开启
+                if (cameras.length === 1) {
+                    startCamera();
+                }
+            } catch (err) {
+                log('获取设备失败: ' + err.message);
+                showStatus('获取设备失败: ' + err.message, 'error');
+            }
+        }
+        
+        async function startCamera() {
+            const deviceId = document.getElementById('cameraList').value;
+            
+            log('正在开启摄像头...');
+            showStatus('正在开启摄像头...', '');
+            
+            try {
+                const constraints = {
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: 'user'
+                    }
+                };
+                
+                if (deviceId) {
+                    constraints.video.deviceId = { exact: deviceId };
+                }
+                
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                
+                video.srcObject = stream;
+                
+                log('摄像头开启成功！');
+                showStatus('✅ 摄像头已开启', 'success');
+                
+                // 尝试获取设备列表
+                getDevices();
+                
+            } catch (err) {
+                log('开启失败: ' + err.message);
+                showStatus('❌ 开启失败: ' + err.message, 'error');
+                
+                // 如果没有设备列表，提示获取
+                if (err.name === 'NotAllowedError') {
+                    alert('请允许浏览器访问摄像头权限！');
+                }
+            }
+        }
+        
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+            video.srcObject = null;
+            log('摄像头已停止');
+            showStatus('摄像头已停止', '');
+        }
+        
+        // 页面加载时获取设备
+        getDevices();
+    </script>
+</body>
+</html>

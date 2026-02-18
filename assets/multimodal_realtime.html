@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TalkArena - 多模态实时监测</title>
+    <!-- MediaPipe Face Mesh -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            text-align: center;
+            color: white;
+            margin-bottom: 20px;
+            font-size: 2em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        .panel {
+            background: white;
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+        }
+        
+        .panel-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        /* 视频和状态并排 */
+        .main-content {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            gap: 20px;
+            margin-bottom: 16px;
+        }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        /* 视频容器 */
+        .video-container {
+            position: relative;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            aspect-ratio: 4/3;
+        }
+        
+        .video-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* 镜像显示 */
+        }
+        
+        .video-container canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+        }
+        
+        .video-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            display: flex;
+            justify-content: space-between;
+            z-index: 10;
+        }
+        
+        .video-badge {
+            background: rgba(0,0,0,0.6);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .video-badge.recording {
+            background: rgba(255,0,0,0.7);
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        /* 音量条 */
+        .volume-meter {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            right: 10px;
+            height: 4px;
+            background: rgba(255,255,255,0.3);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .volume-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00b894, #ffd93d, #ff6b6b);
+            width: 0%;
+            transition: width 0.1s ease;
+        }
+        
+        .volume-text {
+            position: absolute;
+            bottom: 18px;
+            right: 10px;
+            color: white;
+            font-size: 11px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+        
+        /* 权限按钮 */
+        .permission-panel {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .permission-buttons {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            margin-top: 12px;
+        }
+        
+        .btn {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover:not(:disabled) {
+            background: #5a6fd6;
+            transform: translateY(-2px);
+        }
+        
+        .btn-primary:disabled {
+            background: #a0aec0;
+            cursor: not-allowed;
+        }
+        
+        .btn-secondary {
+            background: #f8f9fa;
+            color: #333;
+            border: 2px solid #e9ecef;
+        }
+        
+        .btn-secondary:hover {
+            background: #e9ecef;
+        }
+        
+        .btn-danger {
+            background: #ff6b6b;
+            color: white;
+        }
+        
+        /* 状态标志 */
+        .status-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        
+        .status-item {
+            flex: 1;
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+            border: 2px solid #e9ecef;
+            transition: all 0.3s ease;
+        }
+        
+        .status-item.active {
+            border-color: #667eea;
+            background: #f0f3ff;
+        }
+        
+        .status-icon {
+            font-size: 40px;
+            margin-bottom: 6px;
+            display: block;
+        }
+        
+        .status-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 2px;
+        }
+        
+        .status-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .status-score {
+            font-size: 11px;
+            color: #667eea;
+            margin-top: 2px;
+        }
+        
+        /* 特征值显示 */
+        .features-panel {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 12px;
+            margin-top: 12px;
+        }
+        
+        .features-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 8px;
+        }
+        
+        .feature-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+        
+        .feature-label {
+            color: #666;
+        }
+        
+        .feature-value {
+            color: #333;
+            font-weight: 600;
+        }
+        
+        .feature-bar {
+            width: 100%;
+            height: 4px;
+            background: #e9ecef;
+            border-radius: 2px;
+            margin-top: 2px;
+            margin-bottom: 8px;
+            overflow: hidden;
+        }
+        
+        .feature-bar-fill {
+            height: 100%;
+            background: #667eea;
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+        
+        /* 模拟器 */
+        .simulator {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+        
+        @media (max-width: 600px) {
+            .simulator {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .simulator-section {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 12px;
+        }
+        
+        .simulator-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 8px;
+        }
+        
+        .emotion-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+        }
+        
+        .emotion-btn {
+            padding: 8px;
+            border: 2px solid #e9ecef;
+            border-radius: 6px;
+            background: white;
+            cursor: pointer;
+            font-size: 20px;
+            transition: all 0.2s;
+        }
+        
+        .emotion-btn:hover {
+            border-color: #667eea;
+            transform: scale(1.1);
+        }
+        
+        .emotion-btn.selected {
+            border-color: #667eea;
+            background: #f0f3ff;
+        }
+        
+        /* 结果面板 */
+        .result-panel {
+            background: #f0f3ff;
+            border-radius: 10px;
+            padding: 16px;
+            margin-top: 12px;
+            display: none;
+        }
+        
+        .result-panel.show {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        /* 输入区域 */
+        .input-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        
+        .text-input {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 14px;
+            resize: vertical;
+            min-height: 60px;
+        }
+        
+        .text-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        /* 连接状态 */
+        .connection-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        
+        .connection-status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .connection-status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .connection-status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        /* 隐藏的视频元素 */
+        #input-video {
+            display: none;
+        }
+        
+        /* 加载动画 */
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎭 TalkArena 多模态实时监测</h1>
+        
+        <!-- 权限和媒体面板 -->
+        <div class="panel">
+            <div class="panel-title">
+                📹 摄像头与麦克风
+                <span id="connection-status" class="connection-status disconnected" style="margin-left: auto;">
+                    <span>●</span> 未连接
+                </span>
+            </div>
+            
+            <div class="main-content">
+                <!-- 左侧：视频 -->
+                <div>
+                    <div class="video-container" id="video-container">
+                        <video id="output-video" playsinline></video>
+                        <canvas id="output-canvas"></canvas>
+                        
+                        <div class="video-overlay">
+                            <div class="video-badge" id="camera-badge">
+                                📷 摄像头关闭
+                            </div>
+                            <div class="video-badge" id="mic-badge">
+                                🎤 麦克风关闭
+                            </div>
+                        </div>
+                        
+                        <div class="volume-meter">
+                            <div class="volume-bar" id="volume-bar"></div>
+                        </div>
+                        <div class="volume-text" id="volume-text">音量: 0%</div>
+                    </div>
+                    
+                    <!-- 特征值显示 -->
+                    <div class="features-panel" id="features-panel" style="display: none;">
+                        <div class="features-title">实时特征值</div>
+                        <div class="feature-row">
+                            <span class="feature-label">自信度</span>
+                            <span class="feature-value" id="confidence-value">--</span>
+                        </div>
+                        <div class="feature-bar">
+                            <div class="feature-bar-fill" id="confidence-bar" style="width: 0%"></div>
+                        </div>
+                        
+                        <div class="feature-row">
+                            <span class="feature-label">紧张度</span>
+                            <span class="feature-value" id="nervousness-value">--</span>
+                        </div>
+                        <div class="feature-bar">
+                            <div class="feature-bar-fill" id="nervousness-bar" style="width: 0%; background: #ff6b6b;"></div>
+                        </div>
+                        
+                        <div class="feature-row">
+                            <span class="feature-label">微笑程度</span>
+                            <span class="feature-value" id="smile-value">--</span>
+                        </div>
+                        <div class="feature-bar">
+                            <div class="feature-bar-fill" id="smile-bar" style="width: 0%; background: #ffd93d;"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 右侧：控制和状态 -->
+                <div>
+                    <!-- 权限按钮 -->
+                    <div class="permission-panel" id="permission-panel">
+                        <p style="color: #666; margin-bottom: 12px;">需要授权摄像头和麦克风权限以进行实时分析</p>
+                        <div class="permission-buttons">
+                            <button class="btn btn-primary" id="start-camera-btn" onclick="startCamera()">
+                                📷 开启摄像头
+                            </button>
+                            <button class="btn btn-primary" id="start-mic-btn" onclick="startMicrophone()">
+                                🎤 开启麦克风
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- 状态显示 -->
+                    <div class="status-bar" id="status-bar" style="display: none;">
+                        <div class="status-item" id="emotion-status">
+                            <span class="status-icon" id="emotion-icon">❓</span>
+                            <div class="status-label">表情状态</div>
+                            <div class="status-value" id="emotion-text">检测中...</div>
+                            <div class="status-score" id="emotion-score"></div>
+                        </div>
+                        
+                        <div class="status-item" id="voice-status">
+                            <span class="status-icon" id="voice-icon">❓</span>
+                            <div class="status-label">语音状态</div>
+                            <div class="status-value" id="voice-text">检测中...</div>
+                            <div class="status-score" id="voice-score"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- API 配置 -->
+                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e9ecef;">
+                        <div style="font-size: 12px; color: #666; margin-bottom: 8px;">后端 API 地址</div>
+                        <div class="input-group">
+                            <input type="text" class="text-input" id="api-url" value="http://localhost:5000" style="min-height: 40px;">
+                            <button class="btn btn-secondary" onclick="testConnection()" style="white-space: nowrap;">
+                                测试连接
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 模拟器 -->
+        <div class="panel">
+            <div class="panel-title">🎮 状态模拟器</div>
+            
+            <div class="simulator">
+                <div class="simulator-section">
+                    <div class="simulator-title">选择表情状态</div>
+                    <div class="emotion-grid">
+                        <button class="emotion-btn" data-emotion="happy" title="开心">😊</button>
+                        <button class="emotion-btn" data-emotion="sad" title="难过">😢</button>
+                        <button class="emotion-btn" data-emotion="angry" title="生气">😠</button>
+                        <button class="emotion-btn" data-emotion="surprised" title="惊讶">😲</button>
+                        <button class="emotion-btn" data-emotion="nervous" title="紧张">😰</button>
+                        <button class="emotion-btn" data-emotion="tired" title="疲惫">😴</button>
+                        <button class="emotion-btn" data-emotion="neutral" title="平静">😐</button>
+                        <button class="emotion-btn" data-emotion="confident" title="自信">😎</button>
+                    </div>
+                </div>
+                
+                <div class="simulator-section">
+                    <div class="simulator-title">选择语音状态</div>
+                    <div class="emotion-grid">
+                        <button class="emotion-btn" data-voice="calm" title="沉稳">🎵</button>
+                        <button class="emotion-btn" data-voice="excited" title="激动">🎸</button>
+                        <button class="emotion-btn" data-voice="hesitant" title="犹豫">📢</button>
+                        <button class="emotion-btn" data-voice="agitated" title="焦躁">🥁</button>
+                        <button class="emotion-btn" data-voice="neutral" title="平和">🎤</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="display: flex; gap: 8px; margin-top: 12px;">
+                <button class="btn btn-primary" id="analyze-btn" onclick="analyzeWithBackend()">
+                    🔍 分析当前状态
+                </button>
+                <button class="btn btn-secondary" onclick="clearAll()">
+                    🔄 清除
+                </button>
+                <button class="btn btn-danger" onclick="stopAll()">
+                    ⏹️ 停止
+                </button>
+            </div>
+        </div>
+        
+        <!-- 消息测试 -->
+        <div class="panel">
+            <div class="panel-title">💬 消息测试</div>
+            
+            <textarea class="text-input" id="test-message" rows="2" placeholder="输入测试消息..."></textarea>
+            
+            <div class="input-group">
+                <button class="btn btn-primary" onclick="sendMessage()">
+                    📤 发送并分析
+                </button>
+                <button class="btn btn-secondary" onclick="randomMessage()">
+                    📝 随机
+                </button>
+                <button class="btn btn-secondary" onclick="testTTS()">
+                    🔊 TTS
+                </button>
+            </div>
+            
+            <div class="result-panel" id="result-panel">
+                <div style="font-weight: 600; margin-bottom: 8px;">📊 分析结果</div>
+                <div id="result-content" style="font-size: 13px; line-height: 1.6;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 隐藏的视频输入 -->
+    <video id="input-video" playsinline></video>
+
+    <script>
+        // ============================================
+        // 配置和状态
+        // ============================================
+        const CONFIG = {
+            get apiBaseUrl() {
+                return document.getElementById('api-url').value.trim() || 'http://localhost:5000';
+            }
+        };
+        
+        let faceMesh = null;
+        let camera = null;
+        let audioContext = null;
+        let audioAnalyser = null;
+        let audioStream = null;
+        let isCameraRunning = false;
+        let isMicRunning = false;
+        let selectedEmotion = null;
+        let selectedVoice = null;
+        
+        // 表情特征缓冲区
+        let emotionBuffer = [];
+        const MAX_BUFFER_SIZE = 30; // 3秒（10fps）
+        
+        // ============================================
+        // 摄像头和媒体设置
+        // ============================================
+        
+        // 启动摄像头
+        async function startCamera() {
+            const btn = document.getElementById('start-camera-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> 启动中...';
+            
+            try {
+                // 初始化 Face Mesh
+                faceMesh = new FaceMesh({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+                    }
+                });
+                
+                faceMesh.setOptions({
+                    maxNumFaces: 1,
+                    refineLandmarks: true,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                
+                faceMesh.onResults(onFaceResults);
+                
+                // 获取摄像头权限
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: 320,
+                        height: 240,
+                        facingMode: 'user'
+                    }
+                });
+                
+                const videoElement = document.getElementById('input-video');
+                videoElement.srcObject = stream;
+                
+                await new Promise((resolve) => {
+                    videoElement.onloadedmetadata = () => {
+                        resolve();
+                    };
+                });
+                
+                videoElement.play();
+                
+                // 显示到输出视频
+                const outputVideo = document.getElementById('output-video');
+                outputVideo.srcObject = stream;
+                
+                // 开始处理帧
+                processVideoFrame();
+                
+                isCameraRunning = true;
+                document.getElementById('camera-badge').className = 'video-badge recording';
+                document.getElementById('camera-badge').textContent = '● 录制中';
+                document.getElementById('features-panel').style.display = 'block';
+                document.getElementById('status-bar').style.display = 'flex';
+                
+                btn.innerHTML = '✅ 摄像头已开启';
+                btn.style.background = '#00b894';
+                
+                showNotification('摄像头已启动！');
+                
+            } catch (error) {
+                console.error('摄像头启动失败:', error);
+                btn.disabled = false;
+                btn.innerHTML = '📷 开启摄像头';
+                alert('无法启动摄像头: ' + error.message);
+            }
+        }
+        
+        // 处理视频帧
+        async function processVideoFrame() {
+            if (!isCameraRunning) return;
+            
+            const video = document.getElementById('input-video');
+            if (video.readyState >= 2) {
+                await faceMesh.send({ image: video });
+            }
+            
+            requestAnimationFrame(processVideoFrame);
+        }
+        
+        // Face Mesh 结果处理
+        function onFaceResults(results) {
+            const canvas = document.getElementById('output-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = 320;
+            canvas.height = 240;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                
+                // 绘制面部网格
+                drawConnectors(ctx, landmarks, FACEMESH_TESSELATION, { color: '#00FF00', lineWidth: 0.5 });
+                drawConnectors(ctx, landmarks, FACEMESH_FACE_OVAL, { color: '#FF0000', lineWidth: 1 });
+                drawConnectors(ctx, landmarks, FACEMESH_LIPS, { color: '#0000FF', lineWidth: 1 });
+                
+                // 提取特征
+                const features = extractEmotionFeatures(landmarks);
+                updateEmotionBuffer(features);
+                updateFeaturesDisplay(features);
+                
+                // 更新状态显示
+                const dominantEmotion = inferEmotion(features);
+                updateEmotionStatus(dominantEmotion, Math.round(features.confidence));
+            }
+        }
+        
+        // 提取表情特征
+        function extractEmotionFeatures(landmarks) {
+            const distance = (p1, p2) => {
+                return Math.sqrt(
+                    Math.pow(p1.x - p2.x, 2) + 
+                    Math.pow(p1.y - p2.y, 2)
+                );
+            };
+            
+            // 关键点
+            const LEFT_EYE_TOP = 159, LEFT_EYE_BOTTOM = 145;
+            const RIGHT_EYE_TOP = 386, RIGHT_EYE_BOTTOM = 374;
+            const LEFT_MOUTH = 61, RIGHT_MOUTH = 291;
+            const TOP_MOUTH = 0, BOTTOM_MOUTH = 17;
+            const LEFT_BROW = 105, RIGHT_BROW = 334;
+            const NOSE_TIP = 4;
+            
+            // 眼睛开合度
+            const leftEyeOpen = distance(landmarks[LEFT_EYE_TOP], landmarks[LEFT_EYE_BOTTOM]);
+            const rightEyeOpen = distance(landmarks[RIGHT_EYE_TOP], landmarks[RIGHT_EYE_BOTTOM]);
+            const eyeOpenness = Math.min(1, (leftEyeOpen + rightEyeOpen) / 2 / 0.05);
+            
+            // 微笑程度
+            const mouthWidth = distance(landmarks[LEFT_MOUTH], landmarks[RIGHT_MOUTH]);
+            const mouthHeight = distance(landmarks[TOP_MOUTH], landmarks[BOTTOM_MOUTH]);
+            const smileScore = (mouthWidth > 0) ? ((mouthHeight / mouthWidth - 0.3) * 2) : 0;
+            
+            // 眉毛高度
+            const browY = (landmarks[LEFT_BROW].y + landmarks[RIGHT_BROW].y) / 2;
+            const browRaise = Math.max(0, (landmarks[NOSE_TIP].y - browY) / 0.2);
+            
+            // 面部对称性
+            const leftCheek = landmarks[234];
+            const rightCheek = landmarks[454];
+            const noseX = landmarks[NOSE_TIP].x;
+            const leftDist = Math.abs(leftCheek.x - noseX);
+            const rightDist = Math.abs(rightCheek.x - noseX);
+            const symmetry = 1 - Math.abs(leftDist - rightDist) / Math.max(leftDist, rightDist);
+            
+            // 注视摄像头
+            const lookingAtCamera = (noseX > 0.4 && noseX < 0.6) ? 1 : 0;
+            
+            // 计算自信和紧张度
+            let confidence = 50;
+            confidence += lookingAtCamera * 20;
+            confidence += symmetry * 15;
+            if (smileScore > 0.3 && smileScore < 0.8) confidence += 15;
+            
+            let nervousness = 0;
+            if (eyeOpenness < 0.4) nervousness += 20;
+            if (symmetry < 0.7) nervousness += 25;
+            if (lookingAtCamera < 0.3) nervousness += 20;
+            
+            return {
+                eyeOpenness,
+                smileScore: Math.max(-1, Math.min(1, smileScore)),
+                browRaise: Math.min(1, browRaise),
+                symmetry,
+                lookingAtCamera,
+                confidence: Math.min(100, confidence),
+                nervousness: Math.min(100, nervousness)
+            };
+        }
+        
+        // 推断主导情绪
+        function inferEmotion(features) {
+            if (features.browRaise > 0.7 && features.eyeOpenness > 0.7) return 'surprised';
+            if (features.smileScore > 0.5) return 'happy';
+            if (features.smileScore < -0.3) return 'sad';
+            if (features.browRaise < 0.3 && features.eyeOpenness < 0.5) return 'angry';
+            if (features.nervousness > 60) return 'nervous';
+            if (features.eyeOpenness < 0.4) return 'tired';
+            if (features.confidence > 70) return 'confident';
+            return 'neutral';
+        }
+        
+        // 更新特征缓冲区
+        function updateEmotionBuffer(features) {
+            emotionBuffer.push({
+                ...features,
+                timestamp: Date.now()
+            });
+            
+            if (emotionBuffer.length > MAX_BUFFER_SIZE) {
+                emotionBuffer.shift();
+            }
+        }
+        
+        // 更新特征值显示
+        function updateFeaturesDisplay(features) {
+            document.getElementById('confidence-value').textContent = Math.round(features.confidence) + '%';
+            document.getElementById('confidence-bar').style.width = features.confidence + '%';
+            
+            document.getElementById('nervousness-value').textContent = Math.round(features.nervousness) + '%';
+            document.getElementById('nervousness-bar').style.width = features.nervousness + '%';
+            
+            const smilePercent = Math.round((features.smileScore + 1) * 50);
+            document.getElementById('smile-value').textContent = smilePercent + '%';
+            document.getElementById('smile-bar').style.width = Math.max(0, Math.min(100, smilePercent)) + '%';
+        }
+        
+        // ============================================
+        // 麦克风设置
+        // ============================================
+        
+        async function startMicrophone() {
+            const btn = document.getElementById('start-mic-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> 启动中...';
+            
+            try {
+                // 获取麦克风权限
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: 16000
+                    }
+                });
+                
+                // 创建音频上下文
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioContext.createMediaStreamSource(audioStream);
+                
+                // 创建分析器
+                audioAnalyser = audioContext.createAnalyser();
+                audioAnalyser.fftSize = 256;
+                source.connect(audioAnalyser);
+                
+                isMicRunning = true;
+                document.getElementById('mic-badge').className = 'video-badge recording';
+                document.getElementById('mic-badge').textContent = '● 录音中';
+                
+                btn.innerHTML = '✅ 麦克风已开启';
+                btn.style.background = '#00b894';
+                
+                // 开始音量监测
+                monitorVolume();
+                
+                showNotification('麦克风已启动！');
+                
+            } catch (error) {
+                console.error('麦克风启动失败:', error);
+                btn.disabled = false;
+                btn.innerHTML = '🎤 开启麦克风';
+                alert('无法启动麦克风: ' + error.message);
+            }
+        }
+        
+        // 监测音量
+        function monitorVolume() {
+            if (!isMicRunning || !audioAnalyser) return;
+            
+            const dataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+            audioAnalyser.getByteFrequencyData(dataArray);
+            
+            // 计算平均音量
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+            }
+            const average = sum / dataArray.length;
+            const volumePercent = Math.min(100, Math.round((average / 128) * 100));
+            
+            // 更新音量条
+            document.getElementById('volume-bar').style.width = volumePercent + '%';
+            document.getElementById('volume-text').textContent = `音量: ${volumePercent}%`;
+            
+            // 根据音量更新语音状态（简单逻辑）
+            if (volumePercent > 10) {
+                let voiceState = 'neutral';
+                if (volumePercent > 70) voiceState = 'excited';
+                else if (volumePercent > 40) voiceState = 'calm';
+                else if (volumePercent > 20) voiceState = 'hesitant';
+                
+                updateVoiceStatus(voiceState, volumePercent);
+            }
+            
+            requestAnimationFrame(monitorVolume);
+        }
+        
+        // ============================================
+        // 状态更新
+        // ============================================
+        
+        const emotionMap = {
+            'happy': { icon: '😊', text: '开心' },
+            'sad': { icon: '😢', text: '难过' },
+            'angry': { icon: '😠', text: '生气' },
+            'surprised': { icon: '😲', text: '惊讶' },
+            'nervous': { icon: '😰', text: '紧张' },
+            'tired': { icon: '😴', text: '疲惫' },
+            'neutral': { icon: '😐', text: '平静' },
+            'confident': { icon: '😎', text: '自信' }
+        };
+        
+        const voiceMap = {
+            'calm': { icon: '🎵', text: '沉稳' },
+            'excited': { icon: '🎸', text: '激动' },
+            'hesitant': { icon: '📢', text: '犹豫' },
+            'agitated': { icon: '🥁', text: '焦躁' },
+            'neutral': { icon: '🎤', text: '平和' }
+        };
+        
+        function updateEmotionStatus(emotion, score) {
+            const data = emotionMap[emotion] || emotionMap['neutral'];
+            document.getElementById('emotion-icon').textContent = data.icon;
+            document.getElementById('emotion-text').textContent = data.text;
+            document.getElementById('emotion-score').textContent = score ? `得分: ${score}` : '';
+            document.getElementById('emotion-status').classList.add('active');
+        }
+        
+        function updateVoiceStatus(voice, score) {
+            const data = voiceMap[voice] || voiceMap['neutral'];
+            document.getElementById('voice-icon').textContent = data.icon;
+            document.getElementById('voice-text').textContent = data.text;
+            document.getElementById('voice-score').textContent = score ? `音量: ${score}%` : '';
+            document.getElementById('voice-status').classList.add('active');
+        }
+        
+        // ============================================
+        // API 和后端通信
+        // ============================================
+        
+        async function testConnection() {
+            updateConnectionStatus('connecting');
+            
+            try {
+                const response = await fetch(`${CONFIG.apiBaseUrl}/api/multimodal/test`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    updateConnectionStatus('connected');
+                    showNotification('✅ 后端连接成功！');
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                updateConnectionStatus('disconnected');
+                alert('连接失败: ' + error.message);
+            }
+        }
+        
+        async function analyzeWithBackend() {
+            if (!selectedEmotion && emotionBuffer.length === 0) {
+                alert('请先选择表情状态或开启摄像头！');
+                return;
+            }
+            
+            const btn = document.getElementById('analyze-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> 分析中...';
+            
+            // 构建特征数据
+            let emotionFeatures = null;
+            let voiceFeatures = null;
+            
+            if (emotionBuffer.length > 0) {
+                const avg = emotionBuffer[emotionBuffer.length - 1];
+                emotionFeatures = {
+                    eyeOpenness: avg.eyeOpenness,
+                    smileScore: avg.smileScore,
+                    confidence: avg.confidence,
+                    nervousness: avg.nervousness,
+                    dominantEmotion: inferEmotion(avg)
+                };
+            } else if (selectedEmotion) {
+                emotionFeatures = {
+                    eyeOpenness: 0.85,
+                    smileScore: selectedEmotion === 'happy' ? 0.72 : 0.2,
+                    confidence: selectedEmotion === 'confident' ? 78 : 45,
+                    nervousness: selectedEmotion === 'nervous' ? 75 : 30,
+                    dominantEmotion: selectedEmotion
+                };
+            }
+            
+            try {
+                const response = await fetch(`${CONFIG.apiBaseUrl}/api/multimodal/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: '当前状态分析',
+                        emotion_features: emotionFeatures,
+                        voice_features: voiceFeatures
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showResult(data.data);
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                // 使用本地分析结果
+                showLocalResult(emotionFeatures, voiceFeatures);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🔍 分析当前状态';
+            }
+        }
+        
+        function showLocalResult(emotionFeatures, voiceFeatures) {
+            const emotionScore = emotionFeatures ? Math.round(emotionFeatures.confidence) : 50;
+            const voiceScore = voiceFeatures ? 50 : 50;
+            const overall = Math.round((emotionScore + voiceScore) / 2);
+            
+            const result = {
+                overall_score: overall,
+                breakdown: { text: 50, emotion: emotionScore, voice: voiceScore },
+                feedback: emotionFeatures && emotionFeatures.nervousness > 60 ? 
+                    '表情略显紧张，建议放松' : '状态良好',
+                status_icons: {
+                    emotion_icon: emotionFeatures ? emotionMap[emotionFeatures.dominant_emotion]?.icon : '❓',
+                    emotion_status: emotionFeatures ? emotionMap[emotionFeatures.dominant_emotion]?.text : '未知',
+                    voice_icon: '🎤',
+                    voice_status: '平和'
+                }
+            };
+            
+            showResult(result);
+        }
+        
+        function showResult(data) {
+            const content = `
+                <div style="margin-bottom: 8px;"><strong>综合评分: ${Math.round(data.overall_score)}/100</strong></div>
+                <div style="font-size: 12px; color: #666; margin-bottom: 8px;">
+                    文本: ${Math.round(data.breakdown?.text || 50)} | 
+                    表情: ${Math.round(data.breakdown?.emotion || 50)} | 
+                    语音: ${Math.round(data.breakdown?.voice || 50)}
+                </div>
+                <div style="margin-bottom: 4px;">🎭 ${data.status_icons?.emotion_icon || '❓'} ${data.status_icons?.emotion_status || '未知'}</div>
+                <div style="margin-bottom: 8px;">🎤 ${data.status_icons?.voice_icon || '❓'} ${data.status_icons?.voice_status || '未知'}</div>
+                <div style="color: #667eea;">💡 ${data.feedback}</div>
+            `;
+            
+            document.getElementById('result-content').innerHTML = content;
+            document.getElementById('result-panel').classList.add('show');
+        }
+        
+        async function sendMessage() {
+            const message = document.getElementById('test-message').value.trim();
+            if (!message) {
+                alert('请输入消息！');
+                return;
+            }
+            
+            analyzeWithBackend();
+        }
+        
+        // ============================================
+        // 辅助功能
+        // ============================================
+        
+        function updateConnectionStatus(status) {
+            const el = document.getElementById('connection-status');
+            el.className = 'connection-status ' + status;
+            el.innerHTML = `<span>●</span> ${status === 'connected' ? '已连接' : status === 'connecting' ? '连接中...' : '未连接'}`;
+        }
+        
+        function showNotification(message) {
+            const div = document.createElement('div');
+            div.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: #667eea;
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                z-index: 1000;
+                animation: fadeIn 0.3s ease;
+            `;
+            div.textContent = message;
+            document.body.appendChild(div);
+            setTimeout(() => div.remove(), 3000);
+        }
+        
+        function clearAll() {
+            emotionBuffer = [];
+            document.querySelectorAll('.emotion-btn').forEach(b => b.classList.remove('selected'));
+            selectedEmotion = null;
+            selectedVoice = null;
+            document.getElementById('result-panel').classList.remove('show');
+            
+            // 重置状态显示
+            document.getElementById('emotion-icon').textContent = '❓';
+            document.getElementById('emotion-text').textContent = '检测中...';
+            document.getElementById('emotion-score').textContent = '';
+            document.getElementById('emotion-status').classList.remove('active');
+            
+            document.getElementById('features-panel').style.display = 'none';
+        }
+        
+        function stopAll() {
+            // 停止摄像头
+            if (isCameraRunning) {
+                isCameraRunning = false;
+                const video = document.getElementById('input-video');
+                if (video.srcObject) {
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                }
+                document.getElementById('output-video').srcObject = null;
+                document.getElementById('camera-badge').className = 'video-badge';
+                document.getElementById('camera-badge').textContent = '📷 摄像头关闭';
+                document.getElementById('start-camera-btn').disabled = false;
+                document.getElementById('start-camera-btn').innerHTML = '📷 开启摄像头';
+                document.getElementById('start-camera-btn').style.background = '';
+            }
+            
+            // 停止麦克风
+            if (isMicRunning) {
+                isMicRunning = false;
+                if (audioStream) {
+                    audioStream.getTracks().forEach(track => track.stop());
+                }
+                if (audioContext) {
+                    audioContext.close();
+                }
+                document.getElementById('mic-badge').className = 'video-badge';
+                document.getElementById('mic-badge').textContent = '🎤 麦克风关闭';
+                document.getElementById('volume-bar').style.width = '0%';
+                document.getElementById('volume-text').textContent = '音量: 0%';
+                document.getElementById('start-mic-btn').disabled = false;
+                document.getElementById('start-mic-btn').innerHTML = '🎤 开启麦克风';
+                document.getElementById('start-mic-btn').style.background = '';
+            }
+            
+            clearAll();
+            showNotification('已停止所有媒体');
+        }
+        
+        function randomMessage() {
+            const messages = [
+                "大舅，我敬您一杯！",
+                "您说得对，我记住了",
+                "这杯酒我必须干了！",
+                "还得是您有经验啊"
+            ];
+            document.getElementById('test-message').value = messages[Math.floor(Math.random() * messages.length)];
+        }
+        
+        function testTTS() {
+            const text = document.getElementById('test-message').value || '测试语音';
+            if ('speechSynthesis' in window) {
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'zh-CN';
+                window.speechSynthesis.speak(utterance);
+            }
+        }
+        
+        // 绑定按钮事件
+        document.querySelectorAll('.emotion-btn[data-emotion]').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.emotion-btn[data-emotion]').forEach(b => b.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedEmotion = this.dataset.emotion;
+                updateEmotionStatus(selectedEmotion, 70);
+            });
+        });
+        
+        document.querySelectorAll('.emotion-btn[data-voice]').forEach(btn => {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.emotion-btn[data-voice]').forEach(b => b.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedVoice = this.dataset.voice;
+                updateVoiceStatus(selectedVoice, 60);
+            });
+        });
+        
+        // 页面加载
+        window.addEventListener('load', () => {
+            console.log('🎭 TalkArena 多模态监测已加载');
+            console.log('📹 点击"开启摄像头"和"开启麦克风"开始实时监测');
+        });
+    </script>
+</body>
+</html>

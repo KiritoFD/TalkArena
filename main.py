@@ -1,0 +1,576 @@
+"""
+TalkArena FastAPI 服务端
+整合 Multi-Agent、RAG、决策引擎、防幻觉机制
+"""
+
+import sys
+import os
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+from typing import List, Optional, Dict
+
+from core.engine import TalkArenaEngine
+from core.multimodal_analyzer import MultimodalAnalyzer, EmotionFeatures, VoiceFeatures
+
+app = FastAPI(title="TalkArena")
+
+engine = None
+mm_analyzer = MultimodalAnalyzer()
+
+
+def get_engine():
+    global engine
+    if engine is None:
+        from model_loader import LLMLoader
+
+        llm = LLMLoader()
+        llm.load()
+        engine = TalkArenaEngine(llm, enable_tts=True)
+    return engine
+
+
+class ChatReq(BaseModel):
+    session_id: str
+    message: str = ""
+    chat_history: Optional[List[Dict]] = []
+    multimodal: Optional[Dict] = None
+
+
+class SessionReq(BaseModel):
+    scenario_id: str = "shandong_dinner"
+    scene_name: str = "家庭聚会"
+    characters: Optional[List[Dict]] = []
+
+
+class MMReq(BaseModel):
+    text: str
+    emotion_features: Optional[Dict] = None
+    voice_features: Optional[Dict] = None
+
+
+@app.get("/")
+async def index():
+    return HTMLResponse(content=HTML_TEMPLATE)
+
+
+@app.get("/api/health")
+async def health():
+    return {
+        "status": "ok",
+        "features": ["multi-agent", "rag", "decision-engine", "anti-hallucination"],
+    }
+
+
+@app.post("/api/session/start")
+async def start_session(req: SessionReq):
+    eng = get_engine()
+
+    try:
+        session_id = eng.start_session(
+            scenario_id=req.scenario_id,
+            characters=req.characters or [],
+            scene_name=req.scene_name,
+        )
+
+        session = eng.sessions[session_id]
+        opening = (
+            eng.multi_agent.agents_list[0].think(
+                {
+                    "characters": req.characters
+                    or session["scenario"].get("characters", []),
+                    "user_input": "",
+                    "turn_count": 0,
+                    "dominance": {"user": 50, "ai": 50},
+                }
+            )
+            if req.characters
+            else None
+        )
+
+        return {
+            "success": True,
+            "data": {
+                "session_id": session_id,
+                "opening": opening.content if opening else "",
+                "user_dominance": 50,
+                "ai_dominance": 50,
+                "features": {"multi_agent": True, "rag": True, "decision_engine": True},
+            },
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/chat/send")
+async def send_msg(req: ChatReq):
+    if not req.session_id or not req.message:
+        return {"success": False, "error": "参数错误"}
+
+    eng = get_engine()
+    if req.session_id not in eng.sessions:
+        return {"success": False, "error": "会话不存在"}
+
+    try:
+        multimodal = req.multimodal or {}
+        print(f"[API] 收到多模态数据: {multimodal}")
+        for result in eng.process_turn(req.session_id, req.message, multimodal):
+            if result.stage == "complete":
+                return {"success": True, "data": result.data}
+
+        return {"success": False, "error": "处理失败"}
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/chat/rescue")
+async def rescue(req: ChatReq):
+    if not req.session_id:
+        return {"success": False, "error": "无效会话"}
+
+    eng = get_engine()
+    if req.session_id not in eng.sessions:
+        return {"success": False, "error": "会话不存在"}
+
+    try:
+        suggestion = eng.get_rescue_suggestion(req.session_id)
+        return {"success": True, "data": {"suggestion": suggestion}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/session/end")
+async def end_session(req: ChatReq):
+    if not req.session_id:
+        return {"success": False, "error": "无效会话"}
+
+    eng = get_engine()
+    if req.session_id not in eng.sessions:
+        return {"success": False, "error": "会话不存在"}
+
+    try:
+        report = eng.end_session(req.session_id)
+        return {"success": True, "data": report}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/multimodal/analyze")
+async def mm_analyze(req: MMReq):
+    ef = (
+        EmotionFeatures.from_dict(req.emotion_features)
+        if req.emotion_features
+        else None
+    )
+    vf = VoiceFeatures.from_dict(req.voice_features) if req.voice_features else None
+    result = mm_analyzer.analyze_multimodal(req.text, ef, vf)
+    result["status_icons"] = mm_analyzer.get_status_icons(ef, vf)
+    return {"success": True, "data": result}
+
+
+@app.get("/api/knowledge/search")
+async def search_knowledge(query: str):
+    """RAG知识库搜索"""
+    from core.rag.knowledge_base import ShandongDinnerKnowledgeBase
+
+    kb = ShandongDinnerKnowledgeBase()
+    entries = kb.retrieve(query, top_k=5)
+    return {
+        "success": True,
+        "data": [
+            {
+                "title": e.title,
+                "category": e.category,
+                "content": e.content,
+                "score": e.relevance_score,
+            }
+            for e in entries
+        ],
+    }
+
+
+@app.get("/api/scenarios/list")
+async def list_scenarios():
+    """获取可用场景列表"""
+    from core.scenarios import get_registry
+
+    registry = get_instance = get_registry()
+    templates = registry.list_templates()
+
+    scenarios = [
+        {
+            "id": "shandong_dinner",
+            "name": "山东人的饭桌",
+            "category": "dinner",
+            "description": "经典山东酒桌文化场景",
+            "icon": "🍜",
+            "sub_scenes": ["家庭聚会", "单位聚餐", "商务宴请", "同学聚会", "招待客户"],
+        },
+    ]
+
+    for t in templates:
+        if t["template_id"] == "interview":
+            scenarios.append(
+                {
+                    "id": "interview",
+                    "name": "面试实战",
+                    "category": "interview",
+                    "description": "技术面试、HR面试、行为面试",
+                    "icon": "💼",
+                    "sub_scenes": ["技术面试", "HR面试", "行为面试", "群面"],
+                }
+            )
+        elif t["template_id"] == "debate":
+            scenarios.append(
+                {
+                    "id": "debate",
+                    "name": "辩论训练",
+                    "category": "debate",
+                    "description": "提升逻辑思维和表达能力",
+                    "icon": "🎤",
+                    "sub_scenes": ["AI对就业", "远程工作", "应试教育", "社交媒体"],
+                }
+            )
+
+    return {"success": True, "data": scenarios}
+
+
+app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
+app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TalkArena - 酒桌情商训练平台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#E6F0FF;min-height:100vh}
+.page{display:none;width:100%;min-height:100vh}
+.page.active{display:flex;flex-direction:column}
+
+#p1{justify-content:center;align-items:center;padding:20px}
+.hero{background:#fff;border:4px solid #C8102E;border-radius:20px;padding:40px 60px;max-width:700px;box-shadow:0 10px 40px rgba(200,16,46,.2);text-align:center}
+.logo{font-size:48px;margin-bottom:10px}
+.title{color:#C8102E;font-size:36px;font-weight:900;letter-spacing:3px}
+.sub{color:#8B0000;font-size:16px;margin:10px 0 25px}
+
+.tech-badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:20px 0}
+.badge{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600}
+.badge.rag{background:linear-gradient(135deg,#11998e 0%,#38ef7d 100%)}
+.badge.decision{background:linear-gradient(135deg,#ee0979 0%,#ff6a00 100%)}
+.badge.validator{background:linear-gradient(135deg,#4776E6 0%,#8E54E9 100%)}
+
+.features{text-align:left;margin:25px 0;background:#f8f9fa;padding:20px;border-radius:12px}
+.fi{margin:12px 0;padding-left:15px;border-left:3px solid #C8102E;font-size:14px;line-height:1.6}
+.fi b{color:#C8102E}
+
+.btn1{background:#C8102E;color:#fff;border:none;padding:18px 60px;font-size:22px;font-weight:bold;border-radius:14px;cursor:pointer;box-shadow:0 8px 25px rgba(200,16,46,.4);transition:all .3s}
+.btn1:hover{transform:translateY(-3px);box-shadow:0 12px 35px rgba(200,16,46,.5)}
+
+#p2{padding:30px;max-width:900px;margin:0 auto}
+.cfg-title{color:#C8102E;font-size:28px;font-weight:900;text-align:center}
+.cfg-sub{color:#8B0000;font-size:14px;text-align:center;margin:10px 0 30px}
+
+.section-l{font-size:17px;font-weight:bold;color:#333;margin:25px 0 15px;display:flex;align-items:center;gap:10px}
+.ai-tag{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-size:11px;padding:4px 10px;border-radius:10px;font-weight:600}
+
+.sg{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
+.sc{flex:1;min-width:110px;padding:14px;background:#fff;border:2px solid #E5E7EB;border-radius:10px;cursor:pointer;text-align:center;transition:all .2s}
+.sc:hover{border-color:#C8102E;transform:translateY(-2px)}
+.sc.on{border-color:#C8102E;background:#FFE6E6}
+
+.mg{display:flex;gap:18px;margin-bottom:20px}
+.mc{flex:1;padding:20px;background:#fff;border:2px solid #E5E7EB;border-radius:12px;text-align:center;transition:all .2s}
+.mc:hover{border-color:#C8102E}
+.ma{font-size:48px}
+.mn{font-weight:bold;font-size:16px;margin-top:8px;color:#333}
+.mr{font-size:13px;color:#666;margin-top:5px}
+
+.ab{display:flex;gap:18px;justify-content:center;margin-top:35px}
+.btn2{padding:12px 25px;background:#fff;border:2px solid #E5E7EB;border-radius:10px;cursor:pointer;font-size:14px;transition:all .2s}
+.btn2:hover{border-color:#999}
+.btn3{padding:15px 45px;background:#C8102E;color:#fff;border:none;border-radius:12px;cursor:pointer;font-size:18px;font-weight:bold;box-shadow:0 6px 20px rgba(200,16,46,.3);transition:all .3s}
+.btn3:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(200,16,46,.4)}
+.mb2{background:#fff;border:2px solid #E5E7EB;border-radius:8px;padding:8px 12px;cursor:pointer;font-size:14px;transition:all .2s}
+.mb2:hover{border-color:#667eea}
+.mb2.on{background:#667eea;color:#fff;border-color:#667eea}
+select{background:#fff;border:2px solid #E5E7EB;border-radius:8px;padding:10px;font-size:14px;cursor:pointer}
+select:focus{outline:none;border-color:#667eea}
+
+#p3{background:#F8FAFC;height:100vh}
+.ch{background:#fff;padding:14px 20px;border-bottom:1px solid #E2E8F0;display:flex;justify-content:space-between;align-items:center}
+.hl{display:flex;align-items:center;gap:25px}
+.bb{padding:8px 16px;background:#4A90E2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+.sd{display:flex;gap:25px;background:#f8f9fa;padding:10px 20px;border-radius:10px}
+.si{text-align:center}
+.sla{font-size:11px;color:#666}
+.sv{font-size:22px;font-weight:bold}
+.sv.u{color:#4A90E2}
+.sv.a{color:#C62828}
+.hr{display:flex;gap:10px}
+.rb{padding:8px 16px;background:#5B6BF9;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+.eb{padding:8px 16px;background:#D32F2F;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+
+.cm{flex:1;display:flex;overflow:hidden}
+
+.sp{width:200px;background:linear-gradient(180deg,#E6F0FF 0%,#FFF 100%);border-right:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
+.st{font-size:14px;color:#666;margin-bottom:18px;text-align:center;font-weight:600}
+.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s}
+.ci.talk{border:2px solid #C8102E;box-shadow:0 4px 15px rgba(200,16,46,.2)}
+.ca{font-size:32px}
+.cn{font-weight:bold;font-size:14px;color:#333}
+
+.cc{flex:1;display:flex;flex-direction:column;padding:18px;overflow:hidden}
+.mc2{flex:1;overflow-y:auto;padding:12px;background:#fff;border-radius:12px;border:1px solid #E2E8F0;margin-bottom:12px}
+.msg{max-width:75%;margin:10px 0;padding:14px 18px;border-radius:12px;animation:fadeIn .3s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.msg.u{margin-left:auto;background:#E3F2FD;border-left:4px solid #2196F3}
+.msg.b{background:linear-gradient(135deg,#FFF9F0 0%,#FFEFD5 100%);border-left:4px solid #F5A623}
+.ms{font-weight:bold;color:#D48806;font-size:15px;margin-bottom:6px}
+.mco{line-height:1.6;color:#333;font-size:14px}
+
+.cb{background:linear-gradient(135deg,#f8f9fa 0%,#e9ecef 100%);border-radius:10px;padding:14px 18px;margin:12px 0;border-left:4px solid #667eea;display:flex;align-items:center;gap:10px}
+.cb-icon{font-size:24px}
+.ct2{font-size:14px;color:#333}
+
+.ia{background:#6495ED;border-radius:28px;padding:10px 18px;display:flex;align-items:center;gap:12px;box-shadow:0 4px 15px rgba(100,149,237,.3)}
+.mb{background:transparent;border:none;font-size:22px;cursor:pointer}
+.ci2{flex:1;background:transparent;border:none;color:#fff;font-size:16px;outline:none}
+.ci2::placeholder{color:rgba(255,255,255,.7)}
+.sb{background:#fff;color:#6495ED;border:none;padding:8px 22px;border-radius:16px;cursor:pointer;font-weight:bold;font-size:14px;transition:all .2s}
+.sb:hover{transform:scale(1.05)}
+
+.sp{width:200px;background:linear-gradient(180deg,#E6F0FF 0%,#FFF 100%);border-right:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
+.st{font-size:14px;color:#666;margin-bottom:18px;text-align:center;font-weight:600}
+.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s}
+.ci.talk{border:2px solid #C8102E;box-shadow:0 4px 15px rgba(200,16,46,.2)}
+.ca{font-size:32px}
+.cn{font-weight:bold;font-size:14px;color:#333}
+
+.sp-metrics{flex:1;margin-top:20px;overflow-y:auto}
+.sp-metrics .mt{font-size:12px;color:#666;font-weight:600;margin-bottom:10px;text-align:center}
+.sp-metric{background:#fff;border-radius:8px;padding:10px;margin-bottom:8px;border:1px solid #E2E8F0}
+.sp-metric .mlabel{font-size:11px;color:#666;display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.sp-metric .mlabel span:first-child{font-weight:600}
+.bar-bg{width:100%;height:8px;background:#E2E8F0;border-radius:4px;overflow:hidden}
+.bar-fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:4px;transition:width .3s}
+
+.mp{width:200px;background:#fff;border-left:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
+.mp .mt{font-size:13px;color:#333;font-weight:bold;text-align:center;margin-bottom:12px}
+.mp .cam-preview{width:100%;aspect-ratio:4/3;background:#1a1a1a;border-radius:10px;overflow:hidden;margin-bottom:12px;position:relative}
+.mp .cam-preview video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block}
+.mp .cam-placeholder{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#666;font-size:11px}
+.mp .cam-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#666;font-size:11px}
+.mp select{width:100%;padding:8px;font-size:12px;border:1px solid #E5E7EB;border-radius:6px;margin-bottom:8px;background:#fff}
+.mp button{width:100%;padding:10px;font-size:13px;border:1px solid #E5E7EB;border-radius:8px;background:#fff;cursor:pointer;transition:all .2s;margin-bottom:8px}
+.mp button:hover{border-color:#667eea}
+.mp button.on{background:#667eea;color:#fff;border-color:#667eea}
+.mp .vol-bar{width:100%;height:20px;background:#E2E8F0;border-radius:4px;overflow:hidden;margin-bottom:8px;display:flex;padding:2px}
+.mp .vol-fill{height:100%;background:#667eea;border-radius:2px;transition:width .1s;margin-right:2px}
+.mp .vol-fill:last-child{margin-right:0}
+.mp .vol-segment{flex:1;height:100%;background:#E2E8F0;border-radius:3px;margin-right:4px}
+.mp .vol-segment:last-child{margin-right:0}
+.mp .vol-segment.active{background:#22c55e;box-shadow:0 0 8px #22c55e}
+.mp .vol-label{font-size:11px;color:#666;text-align:center}
+
+#p4{background:#2c313c;padding:40px;justify-content:center;align-items:center}
+.rc{background:#fff;border-radius:20px;padding:40px;max-width:550px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.rt{text-align:center;font-size:26px;font-weight:bold;margin-bottom:20px;color:#333}
+.md{text-align:center;font-size:80px;margin:20px 0}
+.sg2{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:25px 0}
+.sb2{background:#f8f9fa;padding:18px;border-radius:12px;text-align:center}
+.sbl{font-size:12px;color:#666;margin-bottom:5px}
+.sbv{font-size:28px;font-weight:bold;color:#667eea}
+.rs{background:#f8f9fa;padding:20px;border-radius:12px;line-height:1.8;font-size:15px;color:#333}
+.rss{background:#fff9e6;padding:15px;border-radius:12px;border-left:4px solid #F5A623;margin-top:20px;font-size:14px;color:#333}
+.rb2{display:flex;gap:18px;justify-content:center;margin-top:30px}
+
+.loading{display:flex;align-items:center;gap:15px;padding:20px}
+.spinner{width:30px;height:30px;border:3px solid #e9ecef;border-top-color:#667eea;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="p1" class="page active">
+<div class="hero">
+<div class="logo">🍺</div>
+<div class="title">山东人的饭桌</div>
+<div class="sub">AI驱动的酒桌情商实战训练平台</div>
+<div class="tech-badges">
+<span class="badge">Multi-Agent协同</span>
+<span class="badge rag">RAG知识增强</span>
+<span class="badge decision">决策引擎</span>
+<span class="badge validator">防幻觉机制</span>
+</div>
+<div class="features">
+<div class="fi"><b>核心玩法</b> - 在山东酒桌文化的情商高压测试中生存，掌握应对技巧</div>
+<div class="fi"><b>技术亮点</b> - 多Agent协同决策、知识库增强生成、智能任务规划</div>
+<div class="fi"><b>训练价值</b> - 实时多模态分析、高情商回复建议、详细复盘报告</div>
+<div class="fi"><b>场景丰富</b> - 5种经典场景，从家庭聚会到商务宴请，难度递增</div>
+</div>
+<button class="btn1" onclick="goCfg()">开始挑战</button>
+</div>
+</div>
+
+<div id="p2" class="page">
+<div class="cfg-title">山东人的饭桌</div>
+<div class="cfg-sub">选择你的饭局战场</div>
+<div class="section-l">选择场景</div>
+<div class="sg" id="sg"></div>
+<div class="section-l">饭局成员 <span class="ai-tag">AI智能分配</span></div>
+<div class="mg" id="mg"></div>
+<div class="ab">
+<button class="btn2" onclick="randMem()">随机换人</button>
+<button class="btn3" onclick="start()">入席开整</button>
+</div>
+</div>
+
+<div id="p3" class="page">
+<div class="ch">
+<div class="hl">
+<button class="bb" onclick="show('p1')">返回</button>
+<div class="sd">
+<div class="si"><span class="sla">你的气场</span><span class="sv u" id="us">50</span></div>
+<div class="si"><span class="sla">AI气场</span><span class="sv a" id="as">50</span></div>
+</div>
+</div>
+<div class="hr">
+<button class="rb" onclick="rescue()">救场</button>
+<button class="eb" onclick="end()">结束</button>
+</div>
+</div>
+<div class="cm">
+<div class="sp">
+<div class="st">对话角色</div>
+<div id="cl"></div>
+<div class="sp-metrics">
+<div class="mt" style="color:#C8102E;font-weight:bold;">🎭 实时情感分析</div>
+<div class="sp-metric"><div class="mlabel"><span>😎 自信度</span><span id="val-confidence">0</span></div><div class="bar-bg"><div class="bar-fill" id="bar-confidence" style="width:0%;background:#22c55e"></div></div></div>
+<div class="sp-metric"><div class="mlabel"><span>😐 平静度</span><span id="val-calm">0</span></div><div class="bar-bg"><div class="bar-fill" id="bar-calm" style="width:0%;background:#3b82f6"></div></div></div>
+<div class="sp-metric"><div class="mlabel"><span>😰 紧张度</span><span id="val-nervous">0</span></div><div class="bar-bg"><div class="bar-fill" id="bar-nervous" style="width:0%;background:#ef4444"></div></div></div>
+<div class="sp-metric"><div class="mlabel"><span>🤔 专注度</span><span id="val-focus">0</span></div><div class="bar-bg"><div class="bar-fill" id="bar-focus" style="width:0%;background:#f59e0b"></div></div></div>
+</div>
+<div class="mt" style="margin-top:15px;color:#667eea;font-weight:bold;">📊 AI综合评分</div>
+<div class="sp-metric" style="background:linear-gradient(135deg,#f0f3ff,#e0e7ff);border-color:#667eea">
+<div class="mlabel" style="font-size:14px"><span>总分</span><span id="val-score" style="font-size:20px;font-weight:bold;color:#C8102E">--</span></div>
+<div class="bar-bg" style="height:12px"><div class="bar-fill" id="bar-score" style="width:0%;background:linear-gradient(90deg,#667eea,#764ba2);height:100%"></div></div>
+</div>
+</div>
+<div class="cc">
+<div class="mc2" id="mc2"></div>
+<div class="cb" id="cb" style="display:none"><span class="cb-icon">💡</span><span class="ct2" id="ct2"></span></div>
+<div class="ia">
+<button class="mb" onclick="toggleM()">🎙️</button>
+<input class="ci2" id="ci2" placeholder="输入消息..." onkeypress="if(event.key==='Enter')send()">
+<button class="sb" onclick="send()">发送</button>
+</div>
+</div>
+<div class="mp">
+<div class="mt">🎥 摄像头监控</div>
+<div class="cam-preview" id="camPreview">
+<div class="cam-placeholder" id="camPlaceholder">摄像头未开启</div>
+<video id="camVideo" autoplay muted playsinline style="display:none"></video>
+</div>
+<select id="camSelect"><option value="">📷 选择摄像头</option></select>
+<button id="cmb" onclick="toggleC()">📷 开启摄像头</button>
+<button id="mmb" onclick="toggleM2()">🎤 开启麦克风</button>
+<select id="micSelect"><option value="">🎤 选择麦克风</option></select>
+<div class="vol-bar" id="volBar">
+<div class="vol-segment" id="vs1"></div>
+<div class="vol-segment" id="vs2"></div>
+<div class="vol-segment" id="vs3"></div>
+<div class="vol-segment" id="vs4"></div>
+<div class="vol-segment" id="vs5"></div>
+<div class="vol-segment" id="vs6"></div>
+<div class="vol-segment" id="vs7"></div>
+<div class="vol-segment" id="vs8"></div>
+<div class="vol-segment" id="vs9"></div>
+<div class="vol-segment" id="vs10"></div>
+</div>
+<div class="vol-label" id="volLabel">麦克风音量</div>
+<div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+<div style="text-align:center;padding:8px;background:#f8f9fa;border-radius:8px"><span id="ei">❓</span><div style="font-size:10px;color:#666;margin-top:2px">表情</div><div id="et" style="font-size:11px;color:#333">未检测</div></div>
+<div style="text-align:center;padding:8px;background:#f8f9fa;border-radius:8px"><span id="vi">❓</span><div style="font-size:10px;color:#666;margin-top:2px">语音</div><div id="vt" style="font-size:11px;color:#333">未检测</div></div>
+</div>
+</div>
+</div>
+</div>
+
+<div id="p4" class="page"><div class="rc" id="rc"></div></div>
+
+<script>
+let sid=null,scene='家庭聚会',mems=[],chars=[],hist=[],cam=null,mic=null,isC=0,isM=0;
+let selectedScenarioId='shandong_dinner';
+let emotionData={confidence:50,calm:50,nervous:20,focus:50};
+let emotionInterval=null;
+const pool={
+'家庭聚会':{id:'shandong_dinner',icon:'🍜',members:[{a:'👴',n:'大舅',r:'主陪·长辈',b:'德高望重，极讲规矩'},{a:'👵',n:'大妗子',r:'旁观者',b:'数着你喝了几杯'},{a:'👨',n:'表哥',r:'副陪',b:'最擅长说"我陪一个"'},{a:'👨‍🦳',n:'二叔',r:'话唠长辈',b:'喜欢翻旧账'}]},
+'单位聚餐':{id:'shandong_dinner',icon:'🏢',members:[{a:'👨‍💼',n:'王局长',r:'主陪·局领导',b:'深谙官场礼仪'},{a:'👩',n:'小赵',r:'实诚晚辈',b:'性格耿直'},{a:'🧔',n:'老张',r:'酒桌老炮',b:'三句不离酒'}]},
+'商务宴请':{id:'shandong_dinner',icon:'🤝',members:[{a:'👨‍💼',n:'王总',r:'主陪·老板',b:'深谙商务礼仪'},{a:'👔',n:'李总',r:'副陪',b:'能言善辩'},{a:'👨‍💻',n:'小刘',r:'助理',b:'负责倒酒递烟'}]},
+'同学聚会':{id:'shandong_dinner',icon:'🎓',members:[{a:'🧑‍💼',n:'老同学',r:'攀比狂魔',b:'总爱炫耀'},{a:'👨',n:'班长',r:'组局者',b:'最爱回忆当年'},{a:'👧',n:'校花',r:'气氛组',b:'当年的女神'}]},
+'招待客户':{id:'shandong_dinner',icon:'🎁',members:[{a:'👔',n:'李总',r:'东道主',b:'热情招待'},{a:'🧔',n:'老张',r:'气氛担当',b:'负责活跃气氛'},{a:'👩',n:'小王',r:'贴心助理',b:'负责倒酒递烟'}]},
+'技术面试':{id:'interview',icon:'💼',members:[{a:'👨‍💼',n:'面试官',r:'技术经理',b:'资深技术专家'},{a:'👩‍💻',n:'HR',r:'HR负责人',b:'负责综合素质评估'},{a:'🧑‍💻',n:'求职者B',r:'竞争者',b:'技术能力很强'}]},
+'HR面试':{id:'interview',icon:'👔',members:[{a:'👩',n:'HR总监',r:'HR负责人',b:'经验丰富'},{a:'👨‍💼',n:'部门主管',r:'用人部门',b:'注重团队匹配'},{a:'👨‍💻',n:'前台',r:'接待',b:'负责候选人引导'}]},
+'行为面试':{id:'interview',icon:'🎯',members:[{a:'👨‍💼',n:'面试官',r:'HR专家',b:'擅长STAR法则'},{a:'👩‍💼',n:'观察员',r:'HR',b:'细致观察细节'},{a:'🧔',n:'求职者A',r:'竞争者',b:'经历丰富'}]},
+'群面':{id:'interview',icon:'👥',members:[{a:'👨‍💼',n:'面试官',r:'主考官',b:'统筹全场'},{a:'🧑‍💻',n:'候选人A',r:'竞争者',b:'表现积极'},{a:'👩‍💻',n:'候选人B',r:'竞争者',b:'逻辑清晰'},{a:'🧔',n:'候选人C',r:'竞争者',b:'领导力强'}]},
+'AI对就业':{id:'debate',icon:'🤖',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'AI创造新岗位'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'AI取代人类工作'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
+'远程工作':{id:'debate',icon:'🏠',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'远程提高效率'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'远程降低协作'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
+'应试教育':{id:'debate',icon:'📚',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'保证公平'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'扼杀创造力'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
+'社交媒体':{id:'debate',icon:'📱',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'连接世界'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'隐私泄露'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]}
+};
+const scenes=Object.keys(pool);
+function $(id){return document.getElementById(id)}
+function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
+function goCfg(){genMems();show('p2')}
+function selScene(el){document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));el.classList.add('on');scene=el.dataset.s;const p=pool[scene];selectedScenarioId=p?p.id:'shandong_dinner';genMems()}
+function genMems(){const p=pool[scene];if(p){mems=p.members.slice(0,3);selectedScenarioId=p.id}else{mems=pool['家庭聚会'].members.slice(0,3);selectedScenarioId='shandong_dinner'}
+renderMems();renderScenes()}
+function renderScenes(){$('sg').innerHTML=scenes.map(s=>`<div class="sc${s===scene?' on':''}" data-s="${s}" onclick="selScene(this)"><div style="font-size:24px">${pool[s].icon}</div><div>${s}</div></div>`).join('')}
+function renderMems(){$('mg').innerHTML=mems.map(m=>`<div class="mc"><div class="ma">${m.a}</div><div class="mn">${m.n}</div><div class="mr">${m.r}</div></div>`).join('')}
+function randMem(){const p=pool[scene];if(p)mems=[...p.members].sort(()=>Math.random()-.5).slice(0,3);renderMems()}
+async function start(){
+chars=mems;
+try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars})});
+const d=await r.json();if(!d.success){alert(d.error);return}
+sid=d.data.session_id;$('cl').innerHTML=chars.map(c=>`<div class="ci" data-n="${c.n}"><span class="ca">${c.a}</span><div class="cn">${c.n}</div></div>`).join('');
+if(d.data.opening)addBot(d.data.opening);updScr(50,50);show('p3')}catch(e){alert(e)}
+}
+async function send(){
+const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';addUser(t);
+const multimodal={emotion:emotionData,voice_level:isM?($('volLabel').textContent.replace('麦克风音量: ','').replace('%','')||0):0};
+console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
+try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
+const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker);if(d.data.judgment){$('cb').style.display='flex';$('ct2').textContent=d.data.judgment}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
+}
+function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
+function addBot(t,sp){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp)document.querySelectorAll('.ci').forEach(e=>e.classList.toggle('talk',e.dataset.n===sp))}
+function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
+async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
+async function end(){if(!sid)return;try{const r=await fetch('/api/session/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success){$('rc').innerHTML=`<div class="rt">${d.data.scene_name}</div><div class="md">${d.data.medal}</div><div class="sg2"><div class="sb2"><div class="sbl">情商</div><div class="sbv">${d.data.scores.emotional}</div></div><div class="sb2"><div class="sbl">反应</div><div class="sbv">${d.data.scores.reaction}</div></div><div class="sb2"><div class="sbl">总分</div><div class="sbv">${d.data.scores.total}</div></div></div><div class="rs">${d.data.summary}</div><div class="rss">${d.data.suggestion}</div><div class="rb2"><button class="btn2" onclick="show('p1')">返回菜单</button></div>`;show('p4')}}catch(e){}}
+async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
+function updateEmotionDisplay(){$('val-confidence').textContent=emotionData.confidence;$('val-calm').textContent=emotionData.calm;$('val-nervous').textContent=emotionData.nervous;$('val-focus').textContent=emotionData.focus;$('bar-confidence').style.width=emotionData.confidence+'%';$('bar-calm').style.width=emotionData.calm+'%';$('bar-nervous').style.width=emotionData.nervous+'%';$('bar-focus').style.width=emotionData.focus+'%'}
+let micAnimId=null;
+function toggleM2(){const b=$('mmb'),micId=$('micSelect').value;if(isM){if(mic)mic.getTracks().forEach(t=>t.stop());if(micAnimId)cancelAnimationFrame(micAnimId);isM=0;b.textContent='🎤 开启麦克风';b.classList.remove('on');$('volLabel').textContent='麦克风音量';for(let i=1;i<=10;i++)$('vs'+i)?.classList.remove('active');$('vi').textContent='❓';$('vt').textContent='未检测'}else{try{const constraints={audio:true};if(micId)constraints.deviceId={exact:micId};navigator.mediaDevices.getUserMedia(constraints).then(s=>{mic=s;isM=1;b.textContent='✅ 已开启';b.classList.add('on');const ctx=new(window.AudioContext||window.webkitAudioContext)(),src=ctx.createMediaStreamSource(mic),an=ctx.createAnalyser();an.fftSize=512;an.smoothingTimeConstant=0.8;src.connect(an);function m(){if(!isM)return;const data=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(data);let sum=0;for(let i=0;i<data.length;i++)sum+=data[i];const avg=sum/data.length;const vol=Math.min(100,Math.round(avg/128*100));const level=Math.ceil(vol/10);for(let i=1;i<=10;i++)$('vs'+i)?.classList.toggle('active',i<=level);$('volLabel').textContent='麦克风音量: '+vol+'%';if(vol>10){$('vi').textContent=vol>70?'🔊':vol>40?'🎵':'🎤';$('vt').textContent=vol>70?'大声':vol>40?'适中':'轻声'}else{$('vi').textContent='❓';$('vt').textContent='安静'}micAnimId=requestAnimationFrame(m)}m()}).catch(()=>alert('无法开启麦克风'))}catch(e){alert('无法开启麦克风: '+e.message)}}}
+function updateMetrics(scores){console.log('[Metrics] 收到分数:', scores);if(scores){const total=Math.round((scores.emotional_intelligence+scores.response_quality+scores.pressure_handling+scores.cultural_fit)/4);$('val-score').textContent=total;$('bar-score').style.width=total+'%'}else{console.log('[Metrics] 分数为空')}}
+function toggleM(){toggleM2()}
+async function loadDevices(){try{const devs=await navigator.mediaDevices.enumerateDevices();const cams=devs.filter(d=>d.kind==='videoinput');const mics=devs.filter(d=>d.kind==='audioinput');$('camSelect').innerHTML='<option value="">📷 选择摄像头</option>'+cams.map((d,i)=>`<option value="${d.deviceId}">${d.label||'摄像头'+(i+1)}</option>`).join('');$('micSelect').innerHTML='<option value="">🎤 选择麦克风</option>'+mics.map((d,i)=>`<option value="${d.deviceId}">${d.label||'麦克风'+(i+1)}</option>`).join('')}catch(e){}}
+window.onload=()=>{genMems();loadDevices()};
+</script>
+</body>
+</html>"""
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=7860)

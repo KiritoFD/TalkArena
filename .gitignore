@@ -1,3 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Project specific
+outputs/logs/*.log
+outputs/audio/*/
+*.log
+
+# Models
 *.safetensors
 *.zip
 *.pt
+models/vosk-model-*/
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# Environment variables
+.env
+.env.local

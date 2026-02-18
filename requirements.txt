@@ -18,13 +18,13 @@ accelerate>=0.25.0
 openai>=1.0.0
 # TTS/STT dependencies (enabled by default)
 edge-tts>=6.1.0
-vosk>=0.3.45
+vosk>=0.3.40
 pydub>=0.25.0
 scipy>=1.10.0
 soundfile>=0.12.1
-
+nest_asyncio
 # UI & API - Use fully stable older version
-gradio==6.2.0
+gradio>=4.40.0
 
 # Data & Utils
 pydantic>=2.0.0
