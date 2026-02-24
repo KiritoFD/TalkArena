@@ -16,24 +16,41 @@ import base64
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 
-from core.engine import TalkArenaEngine
-from core.multimodal_analyzer import MultimodalAnalyzer
-
 app = FastAPI(title="TalkArena")
 
 engine = None
-mm_analyzer = MultimodalAnalyzer()
+mm_analyzer = None
 
 
 def get_engine():
     global engine
     if engine is None:
-        from model_loader import LLMLoader
+        try:
+            from model_loader import LLMLoader
+            from core.engine import TalkArenaEngine
 
-        llm = LLMLoader()
-        llm.load()
-        engine = TalkArenaEngine(llm, enable_tts=True)
+            llm = LLMLoader()
+            llm.load()
+            engine = TalkArenaEngine(llm, enable_tts=True)
+        except Exception as e:
+            raise RuntimeError(
+                "Engine initialization failed. Ensure model dependencies are installed and model files are available."
+            ) from e
     return engine
+
+
+def get_mm_analyzer():
+    global mm_analyzer
+    if mm_analyzer is None:
+        try:
+            from core.multimodal_analyzer import MultimodalAnalyzer
+
+            mm_analyzer = MultimodalAnalyzer()
+        except Exception as e:
+            raise RuntimeError(
+                "Multimodal analyzer is unavailable. Ensure related dependencies are installed."
+            ) from e
+    return mm_analyzer
 
 
 class ChatReq(BaseModel):
@@ -80,7 +97,10 @@ async def health():
 
 @app.post("/api/session/start")
 async def start_session(req: SessionReq):
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
     try:
         session_id = eng.start_session(
@@ -123,7 +143,10 @@ async def send_msg(req: ChatReq):
     if not req.session_id or not req.message:
         return {"success": False, "error": "参数错误"}
 
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -147,7 +170,10 @@ async def rescue(req: ChatReq):
     if not req.session_id:
         return {"success": False, "error": "无效会话"}
 
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -163,7 +189,10 @@ async def end_session(req: ChatReq):
     if not req.session_id:
         return {"success": False, "error": "无效会话"}
 
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -176,10 +205,14 @@ async def end_session(req: ChatReq):
 
 @app.post("/api/multimodal/analyze")
 async def mm_analyze(req: MMReq):
-    result = mm_analyzer.analyze_multimodal(
-        req.text, req.emotion_features, req.voice_features
-    )
-    return {"success": True, "data": result}
+    try:
+        analyzer = get_mm_analyzer()
+        result = analyzer.analyze_multimodal(
+            req.text, req.emotion_features, req.voice_features
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/knowledge/search")
@@ -249,8 +282,10 @@ async def list_scenarios():
     return {"success": True, "data": scenarios}
 
 
-app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
-app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+if os.path.isdir("outputs/audio"):
+    app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
+if os.path.isdir("assets"):
+    app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
