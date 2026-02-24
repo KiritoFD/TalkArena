@@ -1,507 +1,454 @@
 """
-多模态融合分析模块
-处理表情特征和语音特征的分析，支持实时融合
+升级版多模态融合分析模块
+支持微表情分析和语音情感分析
 """
 
 import numpy as np
-from typing import Dict, Optional, Tuple, List
-from dataclasses import dataclass, field
-from enum import Enum
-import time
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 import logging
+
+from core.emotion_state import (
+    MicroExpressionFeatures,
+    VoiceEmotionFeatures,
+    MultimodalEmotionState,
+    UserEmotionStateMachine,
+    EmotionMemory,
+)
 
 logger = logging.getLogger("TalkArena")
 
 
-class EmotionType(Enum):
-    HAPPY = "happy"
-    SAD = "sad"
-    ANGRY = "angry"
-    SURPRISED = "surprised"
-    NERVOUS = "nervous"
-    CONFIDENT = "confident"
-    NEUTRAL = "neutral"
-    TIRED = "tired"
+class VoiceEmotionAnalyzer:
+    """语音情感分析器"""
 
+    def __init__(self):
+        self.sample_rate = 16000
 
-class VoiceState(Enum):
-    CALM = "calm"
-    EXCITED = "excited"
-    HESITANT = "hesitant"
-    AGITATED = "agitated"
-    NEUTRAL = "neutral"
+    def analyze(self, audio_data: np.ndarray) -> VoiceEmotionFeatures:
+        """分析语音情感特征"""
 
+        features = VoiceEmotionFeatures()
 
-@dataclass
-class EmotionFeatures:
-    """表情特征数据结构"""
+        features.loudness = float(np.mean(np.abs(audio_data)))
 
-    eye_openness: float = 0.0
-    smile_score: float = 0.0
-    brow_raise: float = 0.0
-    symmetry: float = 1.0
-    looking_at_camera: float = 0.0
-    confidence: float = 50.0
-    nervousness: float = 50.0
-    dominant_emotion: str = "neutral"
-    head_pose: Optional[Dict] = None
+        zero_crossings = np.sum(np.abs(np.diff(np.sign(audio_data)))) / 2
+        speech_rate = (zero_crossings / self.sample_rate) * 60
+        features.speech_rate = min(6.0, max(1.0, speech_rate / 100))
 
-    @classmethod
-    def from_dict(cls, data: Dict) -> "EmotionFeatures":
-        """从字典创建"""
-        return cls(
-            eye_openness=data.get("eyeOpenness", 0.0),
-            smile_score=data.get("smileScore", 0.0),
-            brow_raise=data.get("browRaise", 0.0),
-            symmetry=data.get("symmetry", 1.0),
-            looking_at_camera=data.get("lookingAtCamera", 0.0),
-            confidence=data.get("confidence", 50.0),
-            nervousness=data.get("nervousness", 50.0),
-            dominant_emotion=data.get("dominantEmotion", "neutral"),
-            head_pose=data.get("headPose"),
+        features.energy_variance = float(np.var(np.abs(audio_data)))
+
+        features.emotion_scores = self._infer_emotion(features)
+
+        features.valence = self._compute_valence(features)
+        features.arousal = self._compute_arousal(features)
+        features.dominance = self._compute_dominance(features)
+
+        return features
+
+    def _infer_emotion(self, features: VoiceEmotionFeatures) -> Dict[str, float]:
+        """推断语音情感"""
+        scores = {}
+
+        loudness = features.loudness
+        speech_rate = features.speech_rate
+        energy_var = features.energy_variance
+
+        scores["happy"] = (
+            min(1.0, loudness * 1.2) * 0.3 + min(1.0, speech_rate / 4.0) * 0.3
+        )
+        scores["sad"] = (1 - loudness) * 0.4 + (1 - min(1.0, speech_rate / 3.0)) * 0.3
+        scores["angry"] = min(1.0, loudness) * 0.4 + min(1.0, energy_var * 10) * 0.3
+        scores["nervous"] = (
+            min(1.0, energy_var * 15) * 0.5 + (1 - min(1.0, speech_rate / 2.5)) * 0.3
+        )
+        scores["confident"] = (1 - energy_var * 8) * 0.4 + min(
+            1.0, speech_rate / 3.5
+        ) * 0.3
+        scores["hesitant"] = (1 - loudness) * 0.3 + min(1.0, energy_var * 8) * 0.4
+
+        for k in scores:
+            scores[k] = max(0.0, min(1.0, scores[k]))
+
+        return scores
+
+    def _compute_valence(self, f: VoiceEmotionFeatures) -> float:
+        scores = f.emotion_scores or {}
+        return (scores.get("happy", 0) - scores.get("sad", 0)) * 0.5
+
+    def _compute_arousal(self, f: VoiceEmotionFeatures) -> float:
+        scores = f.emotion_scores or {}
+        return max(
+            scores.get("angry", 0),
+            scores.get("nervous", 0),
+            scores.get("happy", 0) * 0.8,
         )
 
-    def to_dict(self) -> Dict:
-        """转换为字典"""
-        return {
-            "eyeOpenness": self.eye_openness,
-            "smileScore": self.smile_score,
-            "browRaise": self.brow_raise,
-            "symmetry": self.symmetry,
-            "lookingAtCamera": self.looking_at_camera,
-            "confidence": self.confidence,
-            "nervousness": self.nervousness,
-            "dominantEmotion": self.dominant_emotion,
-            "headPose": self.head_pose,
-        }
-
-
-@dataclass
-class VoiceFeatures:
-    """语音特征数据结构"""
-
-    speech_rate: float = 0.0
-    pitch_mean: float = 0.0
-    pitch_std: float = 0.0
-    volume_variance: float = 0.0
-    pause_frequency: float = 0.0
-    energy_pattern: str = "stable"
-    voice_confidence: float = 50.0
-    voice_nervousness: float = 50.0
-    emotion_label: str = "neutral"
-
-    @classmethod
-    def from_dict(cls, data: Dict) -> "VoiceFeatures":
-        """从字典创建"""
-        return cls(
-            speech_rate=data.get("speechRate", 0.0),
-            pitch_mean=data.get("pitchMean", 0.0),
-            pitch_std=data.get("pitchStd", 0.0),
-            volume_variance=data.get("volumeVariance", 0.0),
-            pause_frequency=data.get("pauseFrequency", 0.0),
-            energy_pattern=data.get("energyPattern", "stable"),
-            voice_confidence=data.get("voiceConfidence", 50.0),
-            voice_nervousness=data.get("voiceNervousness", 50.0),
-            emotion_label=data.get("emotionLabel", "neutral"),
+    def _compute_dominance(self, f: VoiceEmotionFeatures) -> float:
+        scores = f.emotion_scores or {}
+        return (
+            scores.get("confident", 0.5) * 0.7 + (1 - scores.get("hesitant", 0)) * 0.3
         )
 
-    def to_dict(self) -> Dict:
-        """转换为字典"""
+
+class MultimodalFusionEngine:
+    """多模态融合引擎"""
+
+    def __init__(self):
+        self.state_machine = UserEmotionStateMachine()
+        self.emotion_memory = EmotionMemory()
+        self.voice_analyzer = VoiceEmotionAnalyzer()
+
+    def process_face_features(self, face_data: Dict) -> MultimodalEmotionState:
+        """处理表情特征"""
+        face_features = MicroExpressionFeatures.from_dict(face_data)
+
+        state = self.state_machine.update(face_features=face_features)
+
+        return state
+
+    def process_voice_features(self, voice_data: Dict) -> MultimodalEmotionState:
+        """处理语音特征"""
+        voice_features = VoiceEmotionFeatures.from_dict(voice_data)
+
+        state = self.state_machine.update(voice_features=voice_features)
+
+        return state
+
+    def fuse(
+        self,
+        face_data: Optional[Dict] = None,
+        voice_data: Optional[Dict] = None,
+        text: str = "",
+    ) -> MultimodalEmotionState:
+        """融合多模态特征"""
+
+        face_features = None
+        voice_features = None
+
+        if face_data:
+            face_features = MicroExpressionFeatures.from_dict(face_data)
+
+        if voice_data:
+            voice_features = VoiceEmotionFeatures.from_dict(voice_data)
+
+        text_sentiment = self._analyze_text_sentiment(text) if text else None
+
+        state = self.state_machine.update(
+            face_features=face_features,
+            voice_features=voice_features,
+            text_sentiment=text_sentiment,
+        )
+
+        return state
+
+    def _analyze_text_sentiment(self, text: str) -> Dict:
+        """简单的文本情感分析"""
+        text_lower = text.lower()
+
+        positive_words = ["开心", "高兴", "谢谢", "好的", "可以", "没问题"]
+        negative_words = ["不行", "不要", "生气", "愤怒", "难过", "紧张"]
+
+        positive_count = sum(1 for w in positive_words if w in text_lower)
+        negative_count = sum(1 for w in negative_words if w in text_lower)
+
+        if positive_count > negative_count:
+            return {"sentiment": "positive", "confidence": 0.6}
+        elif negative_count > positive_count:
+            return {"sentiment": "negative", "confidence": 0.6}
+
+        return {"sentiment": "neutral", "confidence": 0.3}
+
+    def store_interaction(
+        self,
+        user_input: str,
+        multimodal_state: MultimodalEmotionState,
+        npc_response: str,
+    ):
+        """存储交互到记忆"""
+        self.emotion_memory.store(
+            user_input=user_input,
+            multimodal_state=multimodal_state,
+            npc_response=npc_response,
+        )
+
+    def get_related_memories(
+        self, current_state: MultimodalEmotionState, top_k: int = 3
+    ) -> List[Dict]:
+        """获取相关记忆"""
+        return self.emotion_memory.retrieve(
+            current_input="", current_emotion=current_state, top_k=top_k
+        )
+
+    def get_emotion_patterns(self) -> Dict:
+        """获取用户情感模式"""
+        return self.emotion_memory.get_emotion_patterns()
+
+    def get_trend(self) -> str:
+        """获取情感趋势"""
+        return self.state_machine.get_trend()
+
+    def get_history(self, last_n: int = 10) -> List[Dict]:
+        """获取情感历史"""
+        return self.state_machine.get_history(last_n)
+
+
+class EmotionDrivenResponseGenerator:
+    """情感驱动响应生成器 - 为NPC生成行为指令"""
+
+    def __init__(self):
+        self.behavior_templates = self._load_templates()
+
+    def _load_templates(self) -> Dict:
         return {
-            "speechRate": self.speech_rate,
-            "pitchMean": self.pitch_mean,
-            "pitchStd": self.pitch_std,
-            "volumeVariance": self.volume_variance,
-            "pauseFrequency": self.pause_frequency,
-            "energyPattern": self.energy_pattern,
-            "voiceConfidence": self.voice_confidence,
-            "voiceNervousness": self.voice_nervousness,
-            "emotionLabel": self.emotion_label,
+            "confident": {
+                "facial": "严肃直视",
+                "eye_contact": "坚定",
+                "body_posture": "前倾",
+                "voice_tone": "有力",
+                "gesture": "指点",
+            },
+            "nervous": {
+                "facial": "关切",
+                "eye_contact": "温和",
+                "body_posture": "放松",
+                "voice_tone": "缓和",
+                "gesture": "安抚",
+            },
+            "angry": {
+                "facial": "惊讶",
+                "eye_contact": "关切",
+                "body_posture": "暂停",
+                "voice_tone": "缓和",
+                "gesture": "举手",
+            },
+            "happy": {
+                "facial": "开心",
+                "eye_contact": "明亮",
+                "body_posture": "放松",
+                "voice_tone": "轻快",
+                "gesture": "点头",
+            },
+            "sad": {
+                "facial": "同情",
+                "eye_contact": "温柔",
+                "body_posture": "前倾",
+                "voice_tone": "温和",
+                "gesture": "轻拍",
+            },
+            "neutral": {
+                "facial": "自然",
+                "eye_contact": "正常",
+                "body_posture": "自然",
+                "voice_tone": "正常",
+                "gesture": "无",
+            },
         }
+
+    def generate_behavior_cues(
+        self, emotion_state: MultimodalEmotionState, npc_personality: str = "default"
+    ) -> Dict:
+        """生成行为提示"""
+
+        primary = emotion_state.primary_emotion
+        template = self.behavior_templates.get(
+            primary, self.behavior_templates["neutral"]
+        )
+
+        intensity = emotion_state.emotion_intensity
+
+        cues = {
+            "facial_expression": template["facial"],
+            "eye_contact": template["eye_contact"],
+            "body_language": template["body_posture"],
+            "voice_tone": template["voice_tone"],
+            "hand_gesture": template["gesture"],
+            "intensity": intensity,
+            "emotion": primary,
+            "hidden_sentiment": emotion_state.hidden_sentiment,
+            "confidence": emotion_state.confidence,
+        }
+
+        if emotion_state.inconsistencies:
+            cues["inconsistencies"] = emotion_state.inconsistencies
+
+        return cues
+
+    def get_npc_strategy(
+        self, user_emotion: MultimodalEmotionState, npc_role: str = "aggressor"
+    ) -> Dict:
+        """获取NPC策略建议"""
+
+        emotion = user_emotion.primary_emotion
+
+        strategies = {
+            "confident": {
+                "aggressor": {
+                    "tactic": "defensive_counter",
+                    "description": "用户自信，要更加谨慎，增加难度",
+                    "tone": "认真",
+                    "emotional_tone": "严肃",
+                },
+                "supporter": {
+                    "tactic": "observation",
+                    "description": "观察学习",
+                    "tone": "温和",
+                    "emotional_tone": "中性",
+                },
+            },
+            "nervous": {
+                "aggressor": {
+                    "tactic": "continual_attack",
+                    "description": "用户紧张，继续施压",
+                    "tone": "严厉",
+                    "emotional_tone": "强势",
+                },
+                "supporter": {
+                    "tactic": "give_way",
+                    "description": "适当给台阶",
+                    "tone": "温和",
+                    "emotional_tone": "关切",
+                },
+            },
+            "angry": {
+                "aggressor": {
+                    "tactic": "de_escalation",
+                    "description": "用户愤怒，适当收敛",
+                    "tone": "缓和",
+                    "emotional_tone": "收敛",
+                },
+                "supporter": {
+                    "tactic": "support",
+                    "description": "支持安抚",
+                    "tone": "温和",
+                    "emotional_tone": "关心",
+                },
+            },
+        }
+
+        default = {
+            "tactic": "normal",
+            "description": "正常应对",
+            "tone": "自然",
+            "emotional_tone": "中性",
+        }
+
+        return strategies.get(emotion, {}).get(npc_role, default)
 
 
 class MultimodalAnalyzer:
-    """多模态分析器 - 分析表情和语音特征"""
+    """主多模态分析器 - 兼容旧接口"""
 
     def __init__(self):
-        self.emotion_icons = {
-            "happy": "😊",
-            "sad": "😢",
-            "angry": "😠",
-            "surprised": "😲",
-            "nervous": "😰",
-            "tired": "😴",
-            "neutral": "😐",
-            "confident": "😎",
-            "calm": "😌",
-            "excited": "🤩",
-            "hesitant": "🤔",
-            "agitated": "😤",
-        }
-
-        self.voice_icons = {
-            "calm": "🎵",
-            "excited": "🎸",
-            "hesitant": "📢",
-            "agitated": "🥁",
-            "neutral": "🎤",
-        }
-
-    def analyze_emotion(self, features: EmotionFeatures) -> Dict:
-        """分析表情特征，返回评估结果"""
-        # 计算综合得分
-        emotion_score = 50.0
-
-        # 自信度贡献
-        emotion_score += (features.confidence - 50) * 0.3
-
-        # 紧张度惩罚
-        emotion_score -= (features.nervousness - 50) * 0.3
-
-        # 表情自然度
-        if features.symmetry > 0.7:
-            emotion_score += 10
-
-        # 眼神交流
-        if features.looking_at_camera > 0.6:
-            emotion_score += 10
-
-        emotion_score = max(0, min(100, emotion_score))
-
-        # 生成反馈
-        feedback = self._generate_emotion_feedback(features)
-
-        # 获取表情图标
-        emotion_icon = self.emotion_icons.get(
-            features.dominant_emotion, self.emotion_icons["neutral"]
-        )
-
-        return {
-            "score": round(emotion_score, 1),
-            "dominant_emotion": features.dominant_emotion,
-            "emotion_icon": emotion_icon,
-            "confidence": round(features.confidence, 1),
-            "nervousness": round(features.nervousness, 1),
-            "feedback": feedback,
-            "raw_features": features.to_dict(),
-        }
-
-    def analyze_voice(self, features: VoiceFeatures) -> Dict:
-        """分析语音特征，返回评估结果"""
-        # 计算语音得分
-        voice_score = 50.0
-
-        # 自信度贡献
-        voice_score += (features.voice_confidence - 50) * 0.4
-
-        # 紧张度惩罚
-        voice_score -= (features.voice_nervousness - 50) * 0.4
-
-        # 语速适中加分
-        if 2.0 <= features.speech_rate <= 4.0:
-            voice_score += 10
-
-        # 音调稳定加分
-        if features.pitch_std < 25:
-            voice_score += 10
-
-        voice_score = max(0, min(100, voice_score))
-
-        # 生成反馈
-        feedback = self._generate_voice_feedback(features)
-
-        # 获取语音图标
-        voice_icon = self.voice_icons.get(
-            features.emotion_label, self.voice_icons["neutral"]
-        )
-
-        return {
-            "score": round(voice_score, 1),
-            "emotion_label": features.emotion_label,
-            "voice_icon": voice_icon,
-            "voice_confidence": round(features.voice_confidence, 1),
-            "voice_nervousness": round(features.voice_nervousness, 1),
-            "speech_rate": round(features.speech_rate, 1),
-            "feedback": feedback,
-            "raw_features": features.to_dict(),
-        }
+        self.fusion_engine = MultimodalFusionEngine()
+        self.response_generator = EmotionDrivenResponseGenerator()
 
     def analyze_multimodal(
         self,
-        text: str,
-        emotion_features: Optional[EmotionFeatures] = None,
-        voice_features: Optional[VoiceFeatures] = None,
+        text: str = "",
+        emotion_features: Optional[Dict] = None,
+        voice_features: Optional[Dict] = None,
     ) -> Dict:
-        """
-        综合分析文本、表情和语音
-        返回完整的评估结果
-        """
-        results = {
-            "text_score": 50.0,  # 这里可以调用LLM评估文本
-            "emotion_analysis": None,
-            "voice_analysis": None,
-            "overall_score": 50.0,
-            "feedback": "",
-            "inconsistencies": [],
-            "suggestions": [],
-        }
+        """分析多模态输入"""
 
-        weights = {"text": 0.5, "emotion": 0.25, "voice": 0.25}
-        scores = {"text": 50.0, "emotion": 50.0, "voice": 50.0}
-
-        # 分析表情
-        if emotion_features:
-            emotion_result = self.analyze_emotion(emotion_features)
-            results["emotion_analysis"] = emotion_result
-            scores["emotion"] = emotion_result["score"]
-        else:
-            # 如果没有表情数据，降低表情权重
-            weights["text"] += weights["emotion"] * 0.5
-            weights["voice"] += weights["emotion"] * 0.5
-            weights["emotion"] = 0
-
-        # 分析语音
-        if voice_features:
-            voice_result = self.analyze_voice(voice_features)
-            results["voice_analysis"] = voice_result
-            scores["voice"] = voice_result["score"]
-        else:
-            # 如果没有语音数据，降低语音权重
-            weights["text"] += weights["voice"]
-            weights["voice"] = 0
-
-        # 计算综合得分
-        overall_score = sum(scores[k] * weights[k] for k in scores)
-        results["overall_score"] = round(overall_score, 1)
-        results["breakdown"] = {
-            "text": round(scores["text"], 1),
-            "emotion": round(scores["emotion"], 1),
-            "voice": round(scores["voice"], 1),
-        }
-
-        # 检测不一致性
-        inconsistencies = self._detect_inconsistencies(
-            text, emotion_features, voice_features
-        )
-        results["inconsistencies"] = inconsistencies
-
-        # 生成综合反馈
-        results["feedback"] = self._generate_overall_feedback(results, inconsistencies)
-
-        # 生成建议
-        results["suggestions"] = self._generate_suggestions(
-            emotion_features, voice_features
+        state = self.fusion_engine.fuse(
+            face_data=emotion_features, voice_data=voice_features, text=text
         )
 
-        return results
+        behavior_cues = self.response_generator.generate_behavior_cues(state)
 
-    def _generate_emotion_feedback(self, features: EmotionFeatures) -> str:
-        """生成表情反馈"""
-        feedbacks = []
+        patterns = self.fusion_engine.get_emotion_patterns()
+        trend = self.fusion_engine.get_trend()
 
-        if features.nervousness > 70:
-            feedbacks.append("表情略显紧张")
-        elif features.nervousness < 30:
-            feedbacks.append("神态自若")
+        return {
+            "emotion_state": state.to_dict(),
+            "behavior_cues": behavior_cues,
+            "patterns": patterns,
+            "trend": trend,
+            "inconsistencies": state.inconsistencies,
+        }
 
-        if features.confidence > 70:
-            feedbacks.append("自信满满")
-        elif features.confidence < 40:
-            feedbacks.append("可以更自信些")
+    def process_turn(self, user_input: str, multimodal_data: Dict) -> Dict:
+        """处理一轮交互"""
 
-        if features.looking_at_camera > 0.7:
-            feedbacks.append("眼神交流充分")
-        elif features.looking_at_camera < 0.3:
-            feedbacks.append("建议多进行眼神交流")
+        emotion_data = multimodal_data.get("emotion", {})
+        voice_level = multimodal_data.get("voice_level", 0)
 
-        if features.symmetry < 0.6:
-            feedbacks.append("面部表情自然度可以提升")
+        face_data = None
+        if emotion_data:
+            face_data = {
+                "confidence": emotion_data.get("confidence", 0.5),
+                "nervousness": emotion_data.get("nervous", 0.5),
+                "calm": emotion_data.get("calm", 0.5),
+                "focus": emotion_data.get("focus", 0.5),
+                "happiness": emotion_data.get("confidence", 0.5) * 0.3,
+                "sadness": emotion_data.get("nervous", 0.5) * 0.3,
+                "anger": 0.0,
+                "valence": emotion_data.get("confidence", 0.5) - 0.5,
+                "arousal": emotion_data.get("nervous", 0.5),
+                "dominance": emotion_data.get("confidence", 0.5),
+                "smileGenuineScore": emotion_data.get("confidence", 0.5) * 0.3,
+                "browTension": emotion_data.get("nervous", 0.5) * 0.3,
+            }
 
-        return " | ".join(feedbacks) if feedbacks else "表情管理到位"
+        voice_data = None
+        if voice_level > 0:
+            voice_data = {
+                "loudness": voice_level / 100.0,
+                "speechRate": 3.0,
+                "pitchMean": 150.0,
+                "pitchStd": 20.0,
+                "energyVariance": 0.1,
+                "emotionScores": {
+                    "nervous": (100 - voice_level) / 100.0 * 0.3,
+                    "confident": voice_level / 100.0 * 0.5,
+                },
+            }
 
-    def _generate_voice_feedback(self, features: VoiceFeatures) -> str:
-        """生成语音反馈"""
-        feedbacks = []
+        result = self.analyze_multimodal(
+            text=user_input, emotion_features=face_data, voice_features=voice_data
+        )
 
-        if features.voice_nervousness > 70:
-            feedbacks.append("声音略显紧张")
-        elif features.voice_nervousness < 30:
-            feedbacks.append("声音沉稳")
+        return result
 
-        if features.voice_confidence > 70:
-            feedbacks.append("语气坚定有力")
+    def store_memory(self, user_input: str, multimodal_data: Dict, npc_response: str):
+        """存储交互记忆"""
 
-        if features.speech_rate > 4.5:
-            feedbacks.append("语速偏快")
-        elif features.speech_rate < 2.0:
-            feedbacks.append("语速偏慢")
-        else:
-            feedbacks.append("语速适中")
+        state = self.fusion_engine.state_machine.current_state
 
-        if features.pitch_std > 30:
-            feedbacks.append("音调波动较大")
-        elif features.pitch_std < 15:
-            feedbacks.append("音调平稳")
+        from core.emotion_state import MultimodalEmotionState
 
-        if features.pause_frequency > 0.2:
-            feedbacks.append("停顿较多")
+        temp_state = MultimodalEmotionState(
+            primary_emotion=state,
+            emotion_intensity=0.5,
+            valence=0.0,
+            arousal=0.5,
+            dominance=0.5,
+        )
 
-        return " | ".join(feedbacks) if feedbacks else "语气得当"
-
-    def _detect_inconsistencies(
-        self,
-        text: str,
-        emotion_features: Optional[EmotionFeatures],
-        voice_features: Optional[VoiceFeatures],
-    ) -> list:
-        """检测多模态不一致性"""
-        inconsistencies = []
-
-        # 检测1: 文本开心但表情不笑
-        if emotion_features and ("开心" in text or "高兴" in text or "谢谢" in text):
-            if emotion_features.smile_score < 0.2:
-                inconsistencies.append("嘴上说开心，但表情未见笑容")
-
-        # 检测2: 文本强硬但声音颤抖
-        if voice_features and any(
-            word in text for word in ["必须", "一定", "肯定", "没错"]
-        ):
-            if voice_features.voice_nervousness > 60:
-                inconsistencies.append("话语强硬但声音略显紧张")
-
-        # 检测3: 文本谦虚但表情傲慢
-        if emotion_features and any(
-            word in text for word in ["不敢", "惭愧", "过奖", "哪里"]
-        ):
-            if emotion_features.brow_raise > 0.7:
-                inconsistencies.append("嘴上谦虚但表情显得高傲")
-
-        # 检测4: 表情紧张但声音自信
-        if emotion_features and voice_features:
-            if (
-                emotion_features.nervousness > 60
-                and voice_features.voice_confidence > 70
-            ):
-                inconsistencies.append("表情紧张但声音很沉稳")
-
-        return inconsistencies
-
-    def _generate_overall_feedback(self, results: Dict, inconsistencies: list) -> str:
-        """生成综合反馈"""
-        score = results["overall_score"]
-
-        if score >= 80:
-            base_feedback = "表现出色！气场很足"
-        elif score >= 60:
-            base_feedback = "表现不错，还有提升空间"
-        elif score >= 40:
-            base_feedback = "表现一般，需要多加练习"
-        else:
-            base_feedback = "建议调整心态，放松一些"
-
-        # 添加不一致性警告
-        if inconsistencies:
-            base_feedback += f"（注意：{inconsistencies[0]}）"
-
-        return base_feedback
-
-    def _generate_suggestions(
-        self,
-        emotion_features: Optional[EmotionFeatures],
-        voice_features: Optional[VoiceFeatures],
-    ) -> list:
-        """生成改进建议"""
-        suggestions = []
-
-        if emotion_features:
-            if emotion_features.nervousness > 60:
-                suggestions.append("🎯 建议：对着镜子练习微笑，深呼吸放松")
-            if emotion_features.looking_at_camera < 0.4:
-                suggestions.append("👀 建议：说话时要看着对方，增强眼神交流")
-            if emotion_features.symmetry < 0.7:
-                suggestions.append("😊 建议：让表情更自然，放松面部肌肉")
-
-        if voice_features:
-            if voice_features.voice_nervousness > 60:
-                suggestions.append("🗣️ 建议：放慢语速，用腹式呼吸稳定声音")
-            if voice_features.pause_frequency > 0.2:
-                suggestions.append('💬 建议：减少"嗯""啊"等口头禅')
-            if voice_features.speech_rate > 4.5:
-                suggestions.append("⏱️ 建议：放慢语速，给自己思考的时间")
-
-        return suggestions
+        self.fusion_engine.store_interaction(user_input, temp_state, npc_response)
 
     def get_status_icons(
-        self,
-        emotion_features: Optional[EmotionFeatures] = None,
-        voice_features: Optional[VoiceFeatures] = None,
+        self, emotion_features=None, voice_features=None
     ) -> Dict[str, str]:
-        """
-        获取状态图标，用于前端展示
-        返回表情图标和语音图标
-        """
-        icons = {
-            "emotion_icon": "❓",
-            "emotion_status": "未检测",
-            "voice_icon": "❓",
-            "voice_status": "未检测",
+        """获取状态图标"""
+
+        state = self.fusion_engine.state_machine
+
+        emotion_icons = {
+            "confident": "😎",
+            "nervous": "😰",
+            "angry": "😠",
+            "happy": "😊",
+            "sad": "😢",
+            "surprised": "😲",
+            "confused": "😕",
+            "contemptuous": "🙄",
+            "neutral": "😐",
         }
 
-        if emotion_features:
-            emotion_icon = self.emotion_icons.get(
-                emotion_features.dominant_emotion, "😐"
-            )
-            icons["emotion_icon"] = emotion_icon
-            icons["emotion_status"] = self._get_emotion_status_text(emotion_features)
-
-        if voice_features:
-            voice_icon = self.voice_icons.get(voice_features.emotion_label, "🎤")
-            icons["voice_icon"] = voice_icon
-            icons["voice_status"] = self._get_voice_status_text(voice_features)
-
-        return icons
-
-    def _get_emotion_status_text(self, features: EmotionFeatures) -> str:
-        """获取表情状态文本"""
-        emotion_map = {
-            "happy": "开心",
-            "sad": "难过",
-            "angry": "生气",
-            "surprised": "惊讶",
-            "nervous": "紧张",
-            "tired": "疲惫",
-            "neutral": "平静",
-            "confident": "自信",
+        return {
+            "emotion_icon": emotion_icons.get(state.current_state, "😐"),
+            "emotion_status": state.current_state,
+            "confidence": f"{state.state_confidence:.0%}",
         }
-
-        emotion_text = emotion_map.get(
-            features.dominant_emotion, features.dominant_emotion
-        )
-
-        # 添加自信度/紧张度提示
-        if features.confidence > 70:
-            return f"{emotion_text}·自信"
-        elif features.nervousness > 60:
-            return f"{emotion_text}·紧张"
-
-        return emotion_text
-
-    def _get_voice_status_text(self, features: VoiceFeatures) -> str:
-        """获取语音状态文本"""
-        emotion_map = {
-            "calm": "沉稳",
-            "excited": "激动",
-            "hesitant": "犹豫",
-            "agitated": "焦躁",
-            "neutral": "平和",
-        }
-
-        voice_text = emotion_map.get(features.emotion_label, features.emotion_label)
-
-        # 添加语速提示
-        if features.speech_rate > 4.5:
-            return f"{voice_text}·偏快"
-        elif features.speech_rate < 2.0:
-            return f"{voice_text}·偏慢"
-
-        return voice_text

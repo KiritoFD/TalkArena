@@ -5,7 +5,8 @@
 
 from typing import Dict, Optional, List, Generator
 import json
-from core.multimodal_analyzer import MultimodalAnalyzer, EmotionFeatures, VoiceFeatures
+from core.multimodal_analyzer import MultimodalAnalyzer
+from core.emotion_state import MicroExpressionFeatures, VoiceEmotionFeatures
 
 
 class MultimodalInputHandler:
@@ -40,25 +41,27 @@ class MultimodalInputHandler:
 
         if emotion_features_dict:
             try:
-                emotion_features = EmotionFeatures.from_dict(emotion_features_dict)
+                emotion_features = MicroExpressionFeatures.from_dict(
+                    emotion_features_dict
+                )
             except Exception as e:
                 print(f"[Multimodal] 解析表情特征失败: {e}")
 
         if voice_features_dict:
             try:
-                voice_features = VoiceFeatures.from_dict(voice_features_dict)
+                voice_features = VoiceEmotionFeatures.from_dict(voice_features_dict)
             except Exception as e:
                 print(f"[Multimodal] 解析语音特征失败: {e}")
 
         # 多模态分析
+        emotion_dict = emotion_features.to_dict() if emotion_features else None
+        voice_dict = voice_features.to_dict() if voice_features else None
         multimodal_result = self.analyzer.analyze_multimodal(
-            text=text, emotion_features=emotion_features, voice_features=voice_features
+            text=text, emotion_features=emotion_dict, voice_features=voice_dict
         )
 
         # 获取状态图标
-        status_icons = self.analyzer.get_status_icons(
-            emotion_features=emotion_features, voice_features=voice_features
-        )
+        status_icons = self.analyzer.get_status_icons()
 
         # 构建结果摘要
         result_summary = {
