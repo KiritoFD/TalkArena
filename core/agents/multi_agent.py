@@ -48,6 +48,193 @@ class BaseAgent:
         self.state.history.append(message)
 
 
+class EmpatheticDialogueAgent(BaseAgent):
+    """升级版对话Agent - 情感驱动"""
+
+    def __init__(self, llm=None):
+        super().__init__(AgentRole.DIALOGUE, llm)
+
+    def think(self, context: Dict) -> AgentMessage:
+        characters = context.get("characters", [])
+        user_input = context.get("user_input", "")
+        turn_count = context.get("turn_count", 0)
+        dominance = context.get("dominance", {"user": 50, "ai": 50})
+        multimodal = context.get("multimodal", {})
+        scenario_id = context.get("scenario_id", "shandong_dinner")
+
+        if not characters:
+            return AgentMessage(self.role, "系统：未配置角色", confidence=0.5)
+
+        speaker_idx = turn_count % len(characters)
+        speaker = characters[speaker_idx]
+        speaker_name = speaker.get("name", "角色")
+
+        emotion_state = multimodal.get("emotion_state", {})
+        coordination = multimodal.get("coordination", {})
+
+        prompt = self._build_empathy_prompt(
+            speaker_name=speaker_name,
+            user_input=user_input,
+            emotion_state=emotion_state,
+            coordination=coordination,
+            turn_count=turn_count,
+            dominance=dominance,
+            scenario_id=scenario_id,
+            characters=characters,
+        )
+
+        if self.llm:
+            try:
+                logger.info(
+                    f"[EmpatheticDialogueAgent] 场景={scenario_id}, 角色={speaker_name}"
+                )
+                response = self.llm.generate(prompt, max_new_tokens=200)
+                content = response.strip()
+                content = re.sub(r"^[^：:]+[：:]\s*", "", content)
+
+                behavior_cues = coordination.get("behavior_instructions", {}).get(
+                    speaker_name, {}
+                )
+
+                return AgentMessage(
+                    self.role,
+                    content,
+                    {
+                        "speaker": speaker_name,
+                        "scenario": scenario_id,
+                        "behavior_cues": behavior_cues,
+                        "emotion_understanding": emotion_state.get(
+                            "primaryEmotion", "neutral"
+                        ),
+                    },
+                    confidence=0.9,
+                )
+            except Exception as e:
+                logger.error(f"[EmpatheticDialogueAgent] 生成失败: {e}")
+                return AgentMessage(
+                    self.role,
+                    self._get_fallback_response(scenario_id, speaker_name),
+                    {"speaker": speaker_name},
+                    confidence=0.6,
+                )
+
+        return AgentMessage(
+            self.role,
+            self._get_fallback_response(scenario_id, speaker_name),
+            {"speaker": speaker_name},
+            confidence=0.5,
+        )
+
+    def _build_empathy_prompt(
+        self,
+        speaker_name: str,
+        user_input: str,
+        emotion_state: Dict,
+        coordination: Dict,
+        turn_count: int,
+        dominance: Dict,
+        scenario_id: str,
+        characters: List[Dict],
+    ) -> str:
+        """构建情感感知的Prompt"""
+
+        primary_emotion = emotion_state.get("primaryEmotion", "neutral")
+        intensity = emotion_state.get("emotionIntensity", 0.5)
+        hidden = emotion_state.get("hiddenSentiment")
+        inconsistencies = emotion_state.get("inconsistencies", [])
+
+        user_sentiment = coordination.get("user_sentiment", {})
+        tactic = user_sentiment.get("strategy", "normal")
+
+        behavior_instructions = coordination.get("behavior_instructions", {})
+        speaker_behavior = behavior_instructions.get(speaker_name, {})
+
+        word_limit = {"shandong_dinner": 60, "interview": 80, "debate": 100}.get(
+            scenario_id, 60
+        )
+
+        emotion_guidance = ""
+        if primary_emotion == "nervous":
+            emotion_guidance = (
+                "用户看起来有点紧张，TA可能感到不安。你可以适当放松语气，或给个台阶。"
+            )
+        elif primary_emotion == "confident":
+            emotion_guidance = (
+                "用户看起来很自信，回答有条理。你需要更加谨慎应对，不能掉以轻心。"
+            )
+        elif primary_emotion == "angry":
+            emotion_guidance = (
+                "用户情绪不太好，可能是你之前说得太过分了。适当收敛，给个台阶。"
+            )
+        elif primary_emotion == "happy":
+            emotion_guidance = "用户情绪不错，可以继续保持这种友好的互动氛围。"
+        else:
+            emotion_guidance = "用户情绪平稳，正常应对即可。"
+
+        if hidden:
+            emotion_guidance += f"\n注意：用户的真实感受可能是：{hidden}"
+
+        if inconsistencies:
+            emotion_guidance += (
+                f"\n检测到用户表达不一致：{inconsistencies[0].get('description', '')}"
+            )
+
+        behavior_guidance = ""
+        if speaker_behavior:
+            facial = speaker_behavior.get("facial", "自然")
+            tone = speaker_behavior.get("tone", "自然")
+            thought = speaker_behavior.get("thought", "")
+            if thought:
+                behavior_guidance = f"（内心活动：{thought}）"
+
+        prompt = f"""<场景类型>{scenario_id}</场景类型>
+<角色设定>
+- 姓名: {speaker_name}
+- 请严格保持{speaker_name}的说话风格和性格特点
+</角色设定>
+
+<当前局势>
+- 用户气场: {dominance["user"]}分 / 你的气场: {dominance["ai"]}分
+- 回合: 第{turn_count + 1}轮
+</局势>
+
+<用户情感分析>
+{emotion_guidance}
+</用户情感分析>
+
+<行为指导>
+{behavior_guidance}
+</行为指导>
+
+<战术策略>
+当前战术: {tactic}
+</战术策略>
+
+<用户刚才说>
+"{user_input}"
+</用户刚才说>
+
+【输出要求】
+1. 严格保持{speaker_name}的说话风格
+2. 根据用户的真实情感状态来调整你的回应
+3. 深度结合情感分析结果，让回复有差异化
+4. 适当添加表情动作描述（用括号）
+5. {word_limit}字以内
+6. 只输出对话内容，不要输出角色名或任何格式
+
+请以{speaker_name}的身份回复："""
+
+        return prompt
+
+    def _get_fallback_response(self, scenario_id: str, speaker_name: str) -> str:
+        fallbacks = {
+            "shandong_dinner": "来来来，咱继续喝！",
+            "interview": "好的，那我们来聊聊下一个问题。",
+            "debate": "对于这个问题，你有什么看法？",
+        }
+        return fallbacks.get(scenario_id, "继续")
+
+
 class DialogueAgent(BaseAgent):
     SCENARIO_CHARACTERS = {
         "shandong_dinner": {
@@ -331,8 +518,8 @@ class DialogueAgent(BaseAgent):
         voice_level = multimodal.get("voice_level", 0)
 
         confidence = emotion.get("confidence", 50)
-        calm = emotion.get("calm", 50)
         nervous = emotion.get("nervous", 20)
+        calm = emotion.get("calm", 50)
         focus = emotion.get("focus", 50)
 
         char_pool = self.SCENARIO_CHARACTERS.get(
@@ -602,6 +789,15 @@ class MultiAgentOrchestrator:
             AgentRole.RESCUER: RescuerAgent(llm),
             AgentRole.MEMORY: MemoryAgent(llm),
         }
+
+        try:
+            from core.agents.emotion_coordinator import EmotionCoordinatorAgent
+
+            self.emotion_coordinator = EmotionCoordinatorAgent(llm)
+            self.use_empathy_mode = True
+        except ImportError:
+            self.use_empathy_mode = False
+
         self.state = AgentState()
         self.agents_list = list(self.agents.values())
 
@@ -610,6 +806,25 @@ class MultiAgentOrchestrator:
             {**context, "memory_action": "retrieve"}
         )
         context["memory"] = json.loads(memory_msg.content) if memory_msg.content else {}
+
+        if self.use_empathy_mode and context.get("multimodal"):
+            multimodal_data = context.get("multimodal", {})
+            emotion_state = multimodal_data.get("emotion_state", {})
+
+            if emotion_state:
+                npc_configs = context.get("characters", [])
+                dialogue_context = {
+                    "turn_count": context.get("turn_count", 0),
+                    "current_speaker": "",
+                }
+
+                coordination = self.emotion_coordinator.coordinate(
+                    user_multimodal_state=emotion_state,
+                    dialogue_context=dialogue_context,
+                    npc_configs=npc_configs,
+                )
+
+                context["multimodal"]["coordination"] = coordination
 
         dialogue_msg = self.agents[AgentRole.DIALOGUE].think(context)
         context["ai_response"] = dialogue_msg.content
@@ -629,7 +844,7 @@ class MultiAgentOrchestrator:
         for msg in [memory_msg, dialogue_msg, evaluator_msg]:
             self.state.history.append(msg)
 
-        return {
+        result = {
             "ai_response": dialogue_msg.content,
             "speaker": dialogue_msg.metadata.get("speaker"),
             "judgment": evaluator_msg.content,
@@ -641,6 +856,20 @@ class MultiAgentOrchestrator:
                 evaluator_msg.metadata.get("new_dominance", {})
             ),
         }
+
+        if self.use_empathy_mode and context.get("multimodal"):
+            multimodal_data = context.get("multimodal", {})
+            emotion_state = multimodal_data.get("emotion_state", {})
+            if emotion_state:
+                result["emotion_analysis"] = {
+                    "primary_emotion": emotion_state.get("primaryEmotion", "neutral"),
+                    "intensity": emotion_state.get("emotionIntensity", 0.5),
+                    "hidden_sentiment": emotion_state.get("hiddenSentiment"),
+                    "inconsistencies": emotion_state.get("inconsistencies", []),
+                    "coordination": context["multimodal"].get("coordination", {}),
+                }
+
+        return result
 
     def get_rescue_suggestion(self, context: Dict) -> str:
         rescue_msg = self.agents[AgentRole.RESCUER].think(context)

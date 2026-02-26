@@ -11,28 +11,46 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
+import base64
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-
-from core.engine import TalkArenaEngine
-from core.multimodal_analyzer import MultimodalAnalyzer, EmotionFeatures, VoiceFeatures
 
 app = FastAPI(title="TalkArena")
 
 engine = None
-mm_analyzer = MultimodalAnalyzer()
+mm_analyzer = None
 
 
 def get_engine():
     global engine
     if engine is None:
-        from model_loader import LLMLoader
+        try:
+            from model_loader import LLMLoader
+            from core.engine import TalkArenaEngine
 
-        llm = LLMLoader()
-        llm.load()
-        engine = TalkArenaEngine(llm, enable_tts=True)
+            llm = LLMLoader()
+            llm.load()
+            engine = TalkArenaEngine(llm, enable_tts=True)
+        except Exception as e:
+            raise RuntimeError(
+                "Engine initialization failed. Ensure model dependencies are installed and model files are available."
+            ) from e
     return engine
+
+
+def get_mm_analyzer():
+    global mm_analyzer
+    if mm_analyzer is None:
+        try:
+            from core.multimodal_analyzer import MultimodalAnalyzer
+
+            mm_analyzer = MultimodalAnalyzer()
+        except Exception as e:
+            raise RuntimeError(
+                "Multimodal analyzer is unavailable. Ensure related dependencies are installed."
+            ) from e
+    return mm_analyzer
 
 
 class ChatReq(BaseModel):
@@ -56,11 +74,14 @@ class MMReq(BaseModel):
     voice_features: Optional[Dict] = None
 
 
-class ScenarioGenerateReq(BaseModel):
-    scene_type: str = "shandong_dinner"
-    scene_name: str = "家庭聚会"
-    difficulty: str = "medium"
-    only_characters: bool = False
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(
+        base64.b64decode(
+            "AAABAAEAEBAAAAEAIABoBAAAFgAAACgAAAAQAAAAIAAAAAEAIAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wD///8AiaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/////wD///8A////AP///wD///8A////AP///wD///8AiaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v////8A////AP///wD///8A////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/////AP///wD///8A////AP///wD///8A////AP///wD///8AiaT6/4mk+v+JpPr/iaT6/4mk+v+JpPr/iaT6/////wD///8A////AP///wD///8A////AP///wD///8A////AP///wCJpPr/iaT6/4mk+v+JpPr/iaT6/4mk+v////8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8AiaT6/4mk+v+JpPr/////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A////AP///wD///8A//8AAP//AAD//wAA//8AAOAfAADADwAAwAcAAMAHAADgBwAA8A8AAOAfAADADwAAwA8AAOAfAAD//wAA//8AAA=="
+        ),
+        media_type="image/x-icon",
+    )
 
 
 @app.get("/")
@@ -78,7 +99,10 @@ async def health():
 
 @app.post("/api/session/start")
 async def start_session(req: SessionReq):
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
     try:
         session_id = eng.start_session(
@@ -126,7 +150,10 @@ async def send_msg(req: ChatReq):
     if not req.session_id or not req.message:
         return {"success": False, "error": "参数错误"}
 
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -150,7 +177,10 @@ async def rescue(req: ChatReq):
     if not req.session_id:
         return {"success": False, "error": "无效会话"}
 
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -166,7 +196,10 @@ async def end_session(req: ChatReq):
     if not req.session_id:
         return {"success": False, "error": "无效会话"}
 
-    eng = get_engine()
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -179,15 +212,14 @@ async def end_session(req: ChatReq):
 
 @app.post("/api/multimodal/analyze")
 async def mm_analyze(req: MMReq):
-    ef = (
-        EmotionFeatures.from_dict(req.emotion_features)
-        if req.emotion_features
-        else None
-    )
-    vf = VoiceFeatures.from_dict(req.voice_features) if req.voice_features else None
-    result = mm_analyzer.analyze_multimodal(req.text, ef, vf)
-    result["status_icons"] = mm_analyzer.get_status_icons(ef, vf)
-    return {"success": True, "data": result}
+    try:
+        analyzer = get_mm_analyzer()
+        result = analyzer.analyze_multimodal(
+            req.text, req.emotion_features, req.voice_features
+        )
+        return {"success": True, "data": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/knowledge/search")
@@ -433,8 +465,10 @@ async def list_scenarios():
     return {"success": True, "data": scenarios}
 
 
-app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
-app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+if os.path.isdir("outputs/audio"):
+    app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
+if os.path.isdir("assets"):
+    app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -527,6 +561,9 @@ select:focus{outline:none;border-color:#667eea}
 @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 .msg.u{margin-left:auto;background:#E3F2FD;border-left:4px solid #2196F3}
 .msg.b{background:linear-gradient(135deg,#FFF9F0 0%,#FFEFD5 100%);border-left:4px solid #F5A623}
+.msg-emo{margin-left:8px;font-size:18px;animation:pulse 0.5s}
+@keyframes pulse{0%{transform:scale(0.8)}50%{transform:scale(1.2)}100%{transform:scale(1)}}
+.ca{transition:transform 0.3s}
 .ms{font-weight:bold;color:#D48806;font-size:15px;margin-bottom:6px}
 .mco{line-height:1.6;color:#333;font-size:14px}
 
@@ -729,6 +766,7 @@ const pool={
 };
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
+function detectEmotion(t){if(!t)return'😐';const lower=t.toLowerCase();if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
 function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
 function goCfg(){show('p2')}
 function selScene(el){document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));el.classList.add('on');scene=el.dataset.s;const p=pool[scene];selectedScenarioId=p?p.id:'shandong_dinner';genMems()}
@@ -1078,29 +1116,22 @@ async function regenerateScene() {
 }
 async function start(){
 chars=mems;
-// 获取用户编辑的场景描述
-const sceneDescText = document.getElementById('sceneDescriptionText');
-const sceneDescription = sceneDescText ? sceneDescText.innerText : '';
-// 获取用户编辑的成员信息（包括用户自己的信息）
-const allCharacters = [...chars];
-if (window.userInfo) {
-    allCharacters.push(window.userInfo);
-}
-
-try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:allCharacters,scene_description:sceneDescription,user_info:window.userInfo})});
+show('p3');
+$('cl').innerHTML=chars.map(c=>`<div class="ci" data-n="${c.n}"><span class="ca">${c.a}</span><div class="cn">${c.n}</div></div>`).join('');
+updScr(50,50);
+try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars})});
 const d=await r.json();if(!d.success){alert(d.error);return}
-sid=d.data.session_id;$('cl').innerHTML=chars.map(c=>`<div class="ci" data-n="${c.n}"><span class="ca">${c.a}</span><div class="cn">${c.n}</div></div>`).join('');
-if(d.data.opening)addBot(d.data.opening, d.data.opening_speaker);updScr(50,50);show('p3')}catch(e){alert(e)}
+sid=d.data.session_id;if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))}catch(e){alert(e)}
 }
 async function send(){
 const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';addUser(t);
 const multimodal={emotion:emotionData,voice_level:isM?($('volLabel').textContent.replace('麦克风音量: ','').replace('%','')||0):0};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
-const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker);if(d.data.judgment){$('cb').style.display='flex';$('ct2').textContent=d.data.judgment}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
+const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));if(d.data.judgment){$('cb').style.display='flex';$('ct2').textContent=d.data.judgment}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
 }
 function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
-function addBot(t,sp){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp)document.querySelectorAll('.ci').forEach(e=>e.classList.toggle('talk',e.dataset.n===sp))}
+function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp){document.querySelectorAll('.ci').forEach(e=>{e.classList.toggle('talk',e.dataset.n===sp);if(e.dataset.n===sp){const ca=e.querySelector('.ca');ca.style.transform='scale(1.2)';setTimeout(()=>ca.style.transform='scale(1)',300)}})}}
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
 async function end(){if(!sid)return;try{const r=await fetch('/api/session/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success){$('rc').innerHTML=`<div class="rt">${d.data.scene_name}</div><div class="md">${d.data.medal}</div><div class="sg2"><div class="sb2"><div class="sbl">情商</div><div class="sbv">${d.data.scores.emotional}</div></div><div class="sb2"><div class="sbl">反应</div><div class="sbv">${d.data.scores.reaction}</div></div><div class="sb2"><div class="sbl">总分</div><div class="sbv">${d.data.scores.total}</div></div></div><div class="rs">${d.data.summary}</div><div class="rss">${d.data.suggestion}</div><div class="rb2"><button class="btn2" onclick="show('p1')">返回菜单</button></div>`;show('p4')}}catch(e){}}

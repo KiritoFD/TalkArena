@@ -16,15 +16,23 @@ sentencepiece>=0.1.99
 protobuf>=3.20.0
 accelerate>=0.25.0
 openai>=1.0.0
-# TTS/STT dependencies (enabled by default)
+
+# TTS/STT dependencies
 edge-tts>=6.1.0
 vosk>=0.3.40
 pydub>=0.25.0
 scipy>=1.10.0
 soundfile>=0.12.1
-nest_asyncio
-# UI & API - Use fully stable older version
+
+# Multimodal & Emotion Analysis
+librosa>=0.10.0
+opencv-python>=4.8.0
+
+# UI & API
+fastapi>=0.100.0
+uvicorn[standard]>=0.22.0
 gradio>=4.40.0
+sse-starlette>=1.8.0
 
 # Data & Utils
 pydantic>=2.0.0
@@ -32,3 +40,7 @@ requests>=2.31.0
 tqdm>=4.66.0
 pyyaml>=6.0
 pillow>=10.0.0
+nest-asyncio>=1.5.0
+
+# Storage
+sqlalchemy>=2.0.0
