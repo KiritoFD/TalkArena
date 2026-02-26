@@ -62,6 +62,8 @@ class TalkArenaEngine:
         scenario_id: str,
         characters: Optional[List[Dict]] = None,
         scene_name: str = "",
+        scene_description: str = "",
+        user_info: Optional[Dict] = None,
     ) -> str:
         """开始会话"""
         from core.validators.output_validator import OutputValidator
@@ -73,6 +75,12 @@ class TalkArenaEngine:
         scenario = self.scenarios.get(scenario_id, {}).copy()
         if characters:
             scenario["characters"] = characters
+        
+        # 添加场景描述和用户信息
+        if scene_description:
+            scenario["description"] = scene_description
+        if user_info:
+            scenario["user_info"] = user_info
 
         self.sessions[session_id] = {
             "scenario_id": scenario_id,
@@ -133,6 +141,8 @@ class TalkArenaEngine:
             "multimodal": multimodal,
             "rag_knowledge": rag_context.get("rag_knowledge", ""),
             "strategies": analysis["strategies"],
+            "scene_description": session["scenario"].get("description", ""),
+            "user_info": session["scenario"].get("user_info"),
         }
 
         result = self.multi_agent.process_turn(context)

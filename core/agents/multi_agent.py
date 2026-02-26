@@ -208,6 +208,8 @@ class DialogueAgent(BaseAgent):
         voice_level: int,
         turn_count: int,
         dominance: Dict,
+        scene_description: str = "",
+        user_info: Dict = None,
     ) -> str:
         personality = role_info.get("personality", "")
         style = role_info.get("style", "")
@@ -251,8 +253,20 @@ class DialogueAgent(BaseAgent):
             scenario_id, 50
         )
 
+        # 添加场景描述和用户信息
+        scene_info = ""
+        if scene_description:
+            scene_info = f"<场景背景>\n{scene_description}\n</场景背景>\n\n"
+
+        user_info_str = ""
+        if user_info:
+            user_name = user_info.get("n", "你")
+            user_role = user_info.get("r", "参与者")
+            user_background = user_info.get("b", "")
+            user_info_str = f"<用户身份>\n- 姓名: {user_name}\n- 角色: {user_role}\n- 背景: {user_background}\n</用户身份>\n\n"
+
         prompt = f"""<场景类型>{scenario_id}</场景类型>
-<角色设定>
+{scene_info}{user_info_str}<角色设定>
 - 姓名: {speaker_name}
 - 性格: {personality}
 - 说话风格: {style}
@@ -303,16 +317,23 @@ class DialogueAgent(BaseAgent):
         dominance = context.get("dominance", {"user": 50, "ai": 50})
         multimodal = context.get("multimodal", {})
         scenario_id = context.get("scenario_id", "shandong_dinner")
+        scene_description = context.get("scene_description", "")
+        user_info = context.get("user_info")
 
         if not characters:
             return AgentMessage(self.role, "系统：未配置角色", confidence=0.5)
 
         speaker_idx = turn_count % len(characters)
         speaker = characters[speaker_idx]
-        speaker_name = speaker.get("name", "角色")
+        speaker_name = speaker.get("name", speaker.get("n", "角色"))
 
         emotion = multimodal.get("emotion", {})
         voice_level = multimodal.get("voice_level", 0)
+
+        confidence = emotion.get("confidence", 50)
+        calm = emotion.get("calm", 50)
+        nervous = emotion.get("nervous", 20)
+        focus = emotion.get("focus", 50)
 
         char_pool = self.SCENARIO_CHARACTERS.get(
             scenario_id, self.SCENARIO_CHARACTERS["shandong_dinner"]
@@ -334,6 +355,8 @@ class DialogueAgent(BaseAgent):
             voice_level,
             turn_count,
             dominance,
+            scene_description,
+            user_info,
         )
 
         system_prompt = system_prompt.replace(

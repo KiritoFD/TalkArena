@@ -46,12 +46,21 @@ class SessionReq(BaseModel):
     scenario_id: str = "shandong_dinner"
     scene_name: str = "家庭聚会"
     characters: Optional[List[Dict]] = []
+    scene_description: Optional[str] = ""
+    user_info: Optional[Dict] = None
 
 
 class MMReq(BaseModel):
     text: str
     emotion_features: Optional[Dict] = None
     voice_features: Optional[Dict] = None
+
+
+class ScenarioGenerateReq(BaseModel):
+    scene_type: str = "shandong_dinner"
+    scene_name: str = "家庭聚会"
+    difficulty: str = "medium"
+    only_characters: bool = False
 
 
 @app.get("/")
@@ -76,6 +85,8 @@ async def start_session(req: SessionReq):
             scenario_id=req.scenario_id,
             characters=req.characters or [],
             scene_name=req.scene_name,
+            scene_description=req.scene_description,
+            user_info=req.user_info,
         )
 
         session = eng.sessions[session_id]
@@ -87,6 +98,8 @@ async def start_session(req: SessionReq):
                     "user_input": "",
                     "turn_count": 0,
                     "dominance": {"user": 50, "ai": 50},
+                    "scene_description": req.scene_description,
+                    "user_info": req.user_info,
                 }
             )
             if req.characters
@@ -98,6 +111,7 @@ async def start_session(req: SessionReq):
             "data": {
                 "session_id": session_id,
                 "opening": opening.content if opening else "",
+                "opening_speaker": opening.metadata.get("speaker") if opening else "",
                 "user_dominance": 50,
                 "ai_dominance": 50,
                 "features": {"multi_agent": True, "rag": True, "decision_engine": True},
@@ -197,6 +211,182 @@ async def search_knowledge(query: str):
     }
 
 
+@app.post("/api/scenario/generate")
+async def generate_scenario(req: ScenarioGenerateReq):
+    """AI生成场景和成员信息"""
+    try:
+        # 获取LLM实例
+        eng = get_engine()
+        llm = eng.multi_agent.llm  # 假设engine包含LLM实例
+        
+        # 根据场景类型生成不同的prompt
+        if req.scene_type == "shandong_dinner":
+            if req.only_characters:
+                prompt = f"""
+请为一场山东饭桌场景生成3个饭桌成员的详细信息，每个成员包括：
+- 姓名
+- 角色（如：长辈、晚辈、同事等）
+- 性格特点
+- 背景故事
+- 适合的emoji头像
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合山东酒桌文化特点，角色设定合理，背景故事生动。
+同时，请为用户指定一个身份，用户身份应符合年轻人群体，例如：晚辈、年轻人、刚工作的新人等。
+
+请以JSON格式输出，包含以下字段：
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+- user_identity: 用户身份信息，包含name、role、personality、background、avatar字段
+"""
+            else:
+                prompt = f"""
+请为一场山东饭桌场景生成以下内容：
+1. 详细的场景背景描述（2-3句话），包括时间、地点、目的和氛围
+2. 3个饭桌成员的详细信息，每个成员包括：
+   - 姓名
+   - 角色（如：长辈、晚辈、同事等）
+   - 性格特点
+   - 背景故事
+   - 适合的emoji头像
+3. 用户身份信息，用户身份应符合年轻人群体，例如：晚辈、年轻人、刚工作的新人等
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合山东酒桌文化特点，角色设定合理，背景故事生动。
+
+请以JSON格式输出，包含以下字段：
+- description: 场景描述
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+- user_identity: 用户身份信息，包含name、role、personality、background、avatar字段
+"""
+        elif req.scene_type == "interview":
+            if req.only_characters:
+                prompt = f"""
+请为一场面试场景生成2-3个面试相关角色的详细信息，每个角色包括：
+- 姓名
+- 角色（如：面试官、HR、竞争者等）
+- 性格特点
+- 背景故事
+- 适合的emoji头像
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合职场面试场景，角色设定专业，背景故事合理。
+
+请以JSON格式输出，包含以下字段：
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+"""
+            else:
+                prompt = f"""
+请为一场面试场景生成以下内容：
+1. 详细的场景背景描述（2-3句话），包括公司类型、面试岗位、面试目的
+2. 2-3个面试相关角色的详细信息，每个角色包括：
+   - 姓名
+   - 角色（如：面试官、HR、竞争者等）
+   - 性格特点
+   - 背景故事
+   - 适合的emoji头像
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合职场面试场景，角色设定专业，背景故事合理。
+
+请以JSON格式输出，包含以下字段：
+- description: 场景描述
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+"""
+        elif req.scene_type == "debate":
+            if req.only_characters:
+                prompt = f"""
+请为一场辩论场景生成3个辩论相关角色的详细信息，每个角色包括：
+- 姓名
+- 角色（如：正方辩手、反方辩手、主持人等）
+- 性格特点
+- 背景故事
+- 适合的emoji头像
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合辩论场景特点，角色设定鲜明，背景故事合理。
+
+请以JSON格式输出，包含以下字段：
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+"""
+            else:
+                prompt = f"""
+请为一场辩论场景生成以下内容：
+1. 详细的场景背景描述（2-3句话），包括辩论主题、辩论形式、参与人员
+2. 3个辩论相关角色的详细信息，每个角色包括：
+   - 姓名
+   - 角色（如：正方辩手、反方辩手、主持人等）
+   - 性格特点
+   - 背景故事
+   - 适合的emoji头像
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合辩论场景特点，角色设定鲜明，背景故事合理。
+
+请以JSON格式输出，包含以下字段：
+- description: 场景描述
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+"""
+        else:
+            return {"success": False, "error": "不支持的场景类型"}
+        
+        # 调用LLM生成内容
+        response = llm.generate(prompt, max_new_tokens=1500, temperature=0.8)
+        
+        # 尝试解析JSON响应
+        import json
+        try:
+            # 清理响应，只保留JSON部分
+            # 查找JSON的开始和结束位置
+            start_idx = response.find('{')
+            end_idx = response.rfind('}') + 1
+            
+            if start_idx != -1 and end_idx != -1:
+                json_str = response[start_idx:end_idx]
+                result = json.loads(json_str)
+                
+                # 确保返回的数据结构正确
+                if req.only_characters:
+                    # 只需要characters字段和可选的user_identity字段
+                    if "characters" in result:
+                        response_data = {"characters": result["characters"]}
+                        if "user_identity" in result:
+                            response_data["user_identity"] = result["user_identity"]
+                        return {
+                            "success": True,
+                            "data": response_data
+                        }
+                    else:
+                        return {"success": False, "error": "生成的内容格式不正确，缺少characters字段"}
+                else:
+                    # 需要description、characters和可选的user_identity字段
+                    if "description" in result and "characters" in result:
+                        response_data = {
+                            "description": result["description"],
+                            "characters": result["characters"]
+                        }
+                        if "user_identity" in result:
+                            response_data["user_identity"] = result["user_identity"]
+                        return {
+                            "success": True,
+                            "data": response_data
+                        }
+                    else:
+                        return {"success": False, "error": "生成的内容格式不正确"}
+            else:
+                return {"success": False, "error": "无法找到JSON内容"}
+        except json.JSONDecodeError as e:
+            print(f"JSON解析错误: {e}")
+            print(f"原始响应: {response[:500]}...")
+            return {"success": False, "error": "无法解析生成的内容"}
+        except Exception as e:
+            print(f"解析过程中出现错误: {e}")
+            return {"success": False, "error": "解析过程中出现错误"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/scenarios/list")
 async def list_scenarios():
     """获取可用场景列表"""
@@ -291,10 +481,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .sc.on{border-color:#C8102E;background:#FFE6E6}
 
 .mg{display:flex;gap:18px;margin-bottom:20px}
-.mc{flex:1;padding:20px;background:#fff;border:2px solid #E5E7EB;border-radius:12px;text-align:center;transition:all .2s}
-.mc:hover{border-color:#C8102E}
-.ma{font-size:48px}
-.mn{font-weight:bold;font-size:16px;margin-top:8px;color:#333}
+.mc{flex:1;padding:20px;background:#fff;border:2px solid #E5E7EB;border-radius:12px;text-align:center;transition:all .2s;min-height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.mc:hover{border-color:#C8102E;transform:translateY(-2px);box-shadow:0 4px 15px rgba(0,0,0,.1)}
+.ma{font-size:48px;margin-bottom:10px}
+.mn{font-weight:bold;font-size:16px;margin-bottom:8px;color:#333}
 .mr{font-size:13px;color:#666;margin-top:5px}
 
 .ab{display:flex;gap:18px;justify-content:center;margin-top:35px}
@@ -428,9 +618,17 @@ select:focus{outline:none;border-color:#667eea}
 <div class="cfg-sub">选择你的饭局战场</div>
 <div class="section-l">选择场景</div>
 <div class="sg" id="sg"></div>
-<div class="section-l">饭局成员 <span class="ai-tag">AI智能分配</span></div>
-<div class="mg" id="mg"></div>
-<div class="ab">
+<div class="ab" style="margin-top:20px;margin-bottom:20px;">
+<button class="btn2" onclick="regenerateScene()">生成背景信息</button>
+</div>
+<div class="section-l" id="sceneInfoSection" style="display:none;">场景信息 <span style="font-size:12px;color:#667eea;cursor:pointer;" onclick="toggleSceneEdit()">✏️ 编辑</span></div>
+<div class="scene-description" id="sceneDescription" style="display:none;background:#f8f9fa;border-radius:10px;padding:15px;margin:10px 0;border-left:4px solid #667eea;">
+  <div id="sceneDescriptionText" style="font-size:14px;color:#333;line-height:1.5;"></div>
+  <textarea id="sceneDescriptionEdit" style="display:none;width:100%;min-height:100px;border:1px solid #ddd;border-radius:5px;padding:10px;font-size:14px;color:#333;line-height:1.5;resize:vertical;"></textarea>
+</div>
+<div class="section-l" id="memberSection" style="display:none;">饭局成员 <span class="ai-tag">AI智能分配</span></div>
+<div class="mg" id="mg" style="display:none;"></div>
+<div class="ab" id="actionButtons" style="display:none;">
 <button class="btn2" onclick="randMem()">随机换人</button>
 <button class="btn3" onclick="start()">入席开整</button>
 </div>
@@ -532,19 +730,367 @@ const pool={
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
 function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
-function goCfg(){genMems();show('p2')}
+function goCfg(){show('p2')}
 function selScene(el){document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));el.classList.add('on');scene=el.dataset.s;const p=pool[scene];selectedScenarioId=p?p.id:'shandong_dinner';genMems()}
-function genMems(){const p=pool[scene];if(p){mems=p.members.slice(0,3);selectedScenarioId=p.id}else{mems=pool['家庭聚会'].members.slice(0,3);selectedScenarioId='shandong_dinner'}
-renderMems();renderScenes()}
+function genMems(){
+    const p=pool[scene];
+    if(p){
+        mems=p.members.slice(0,3);
+        selectedScenarioId=p.id;
+        
+        // 设置默认用户身份，根据场景调整
+        let userRole = '参与者';
+        let userBackground = '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。';
+        
+        if(scene.includes('家庭')){
+            userRole = '晚辈';
+            userBackground = '作为家中的晚辈，你需要在长辈面前展现礼貌和尊重，同时巧妙应对长辈的各种关怀和询问。';
+        } else if(scene.includes('商务') || scene.includes('客户')){
+            userRole = '部门新人';
+            userBackground = '作为公司的新人，你需要在商务宴请中展示专业素养，学会得体应对客户的各种话题和敬酒。';
+        } else if(scene.includes('同学')){
+            userRole = '普通同学';
+            userBackground = '作为聚会中的普通同学，你需要在老同学面前保持自然，既要应对怀旧话题，又要展现自己的成长。';
+        } else if(scene.includes('单位')){
+            userRole = '年轻员工';
+            userBackground = '作为单位的年轻员工，你需要在领导和同事面前展现得体，学会应对职场酒桌文化。';
+        }
+        
+        window.userInfo = {
+            a: '👨‍💼',
+            n: '你',
+            r: userRole,
+            b: userBackground
+        };
+    }else{
+        mems=pool['家庭聚会'].members.slice(0,3);
+        selectedScenarioId='shandong_dinner';
+        
+        // 默认用户信息
+        window.userInfo = {
+            a: '👨‍💼',
+            n: '你',
+            r: '参与者',
+            b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+        };
+    }
+    renderMems();
+    renderScenes();
+}
 function renderScenes(){$('sg').innerHTML=scenes.map(s=>`<div class="sc${s===scene?' on':''}" data-s="${s}" onclick="selScene(this)"><div style="font-size:24px">${pool[s].icon}</div><div>${s}</div></div>`).join('')}
-function renderMems(){$('mg').innerHTML=mems.map(m=>`<div class="mc"><div class="ma">${m.a}</div><div class="mn">${m.n}</div><div class="mr">${m.r}</div></div>`).join('')}
-function randMem(){const p=pool[scene];if(p)mems=[...p.members].sort(()=>Math.random()-.5).slice(0,3);renderMems()}
+function renderMems(){
+    // 使用动态用户信息，如果未设置则使用默认值
+    const userInfo = window.userInfo || {
+        a: '👨‍💼',
+        n: '你',
+        r: '参与者',
+        b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+    };
+    
+    const userMember = `<div class="mc" style="border:2px solid #4A90E2;background:#E3F2FD;position:relative;cursor:pointer" title="${userInfo.b}">
+        <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;background:#2196F3;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;transform:rotate(15deg);box-shadow:0 2px 5px rgba(0,0,0,0.2);z-index:10;">你的角色</div>
+        <div style="position:absolute;top:5px;right:5px;cursor:pointer;font-size:16px;" onclick="editMember('user')">✏️</div>
+        <div class="ma">${userInfo.a}</div>
+        <div class="mn" style="color:#2196F3;">${userInfo.n}</div>
+        <div style="background:#2196F3;color:#fff;padding:4px 8px;border-radius:10px;font-size:12px;margin:5px 0;">${userInfo.r}</div>
+        <div style="font-size:13px;color:#666;line-height:1.4;">${userInfo.b.substring(0, 50)}${userInfo.b.length > 50 ? '...' : ''}</div>
+    </div>`;
+    
+    $('mg').innerHTML=mems.map((m,i)=>`
+        <div class="mc" style="position:relative;cursor:pointer" title="${m.b || m.personality || '无详细信息'}">
+            <div style="position:absolute;top:5px;right:5px;cursor:pointer;font-size:16px;" onclick="editMember(${i})">✏️</div>
+            <div class="ma">${m.a}</div>
+            <div class="mn">${m.n}</div>
+            <div style="background:#E3F2FD;color:#2196F3;padding:4px 8px;border-radius:10px;font-size:12px;margin:5px 0;">${m.r}</div>
+            <div style="font-size:13px;color:#666;line-height:1.4;">${(m.b || m.personality || '无详细信息').substring(0, 50)}${(m.b || m.personality || '').length > 50 ? '...' : ''}</div>
+        </div>
+    `).join('') + userMember;
+}
+
+function toggleSceneEdit() {
+    const textDiv = document.getElementById('sceneDescriptionText');
+    const editArea = document.getElementById('sceneDescriptionEdit');
+    
+    if (editArea.style.display === 'none') {
+        // 切换到编辑模式
+        editArea.value = textDiv.innerText;
+        textDiv.style.display = 'none';
+        editArea.style.display = 'block';
+        editArea.focus();
+    } else {
+        // 切换回显示模式
+        textDiv.innerText = editArea.value;
+        textDiv.style.display = 'block';
+        editArea.style.display = 'none';
+    }
+}
+
+function editMember(index) {
+    let member;
+    if (index === 'user') {
+        member = window.userInfo || {
+            a: '👨‍💼',
+            n: '你',
+            r: '参与者',
+            b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+        };
+    } else {
+        member = mems[index];
+    }
+    
+    const modal = document.createElement('div');
+    modal.id = 'editModal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:1000;';
+    
+    modal.innerHTML = `
+        <div style="background:white;border-radius:10px;padding:20px;width:90%;max-width:500px;max-height:80vh;overflow-y:auto;">
+            <h3 style="margin:0 0 15px 0;color:#333;">编辑成员信息</h3>
+            <div style="margin-bottom:15px;">
+                <label style="display:block;margin-bottom:5px;font-weight:bold;color:#555;">姓名</label>
+                <input type="text" id="editName" value="${member.n}" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:5px;font-size:14px;">
+            </div>
+            <div style="margin-bottom:15px;">
+                <label style="display:block;margin-bottom:5px;font-weight:bold;color:#555;">角色</label>
+                <input type="text" id="editRole" value="${member.r}" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:5px;font-size:14px;">
+            </div>
+            <div style="margin-bottom:15px;">
+                <label style="display:block;margin-bottom:5px;font-weight:bold;color:#555;">背景故事</label>
+                <textarea id="editBackground" style="width:100%;min-height:100px;padding:8px;border:1px solid #ddd;border-radius:5px;font-size:14px;resize:vertical;">${member.b}</textarea>
+            </div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;">
+                <button onclick="closeEditModal()" style="padding:8px 16px;border:1px solid #ddd;background:white;border-radius:5px;cursor:pointer;">取消</button>
+                <button onclick="saveMemberEdit(${index})" style="padding:8px 16px;border:none;background:#2196F3;color:white;border-radius:5px;cursor:pointer;">保存</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+}
+
+function closeEditModal() {
+    const modal = document.getElementById('editModal');
+    if (modal) {
+        modal.remove();
+    }
+}
+
+function saveMemberEdit(index) {
+    const name = document.getElementById('editName').value;
+    const role = document.getElementById('editRole').value;
+    const background = document.getElementById('editBackground').value;
+    
+    if (index === 'user') {
+        window.userInfo.n = name;
+        window.userInfo.r = role;
+        window.userInfo.b = background;
+    } else {
+        mems[index].n = name;
+        mems[index].r = role;
+        mems[index].b = background;
+    }
+    
+    renderMems();
+    closeEditModal();
+}
+
+async function randMem() {
+    try {
+        const b = document.querySelector('button[onclick="randMem()"]');
+        const originalText = b.textContent;
+        
+        // 更改按钮文本为动态加载文案
+        const loadingMessages = ['正在重新设计人物...', '正在构建新的人物关系...', '正在生成新角色...', '即将完成...'];
+        let currentIndex = 0;
+        let intervalId;
+        
+        // 显示加载文案，显示完后停留在最后一个文案
+        intervalId = setInterval(() => {
+            if (currentIndex < loadingMessages.length) {
+                b.textContent = loadingMessages[currentIndex];
+                currentIndex++;
+            } else {
+                // 已经显示完所有文案，停止定时器并保持在最后一个文案
+                clearInterval(intervalId);
+            }
+        }, 1000);
+        
+        b.disabled = true;
+        
+        const r = await fetch('/api/scenario/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ 
+                scene_type: selectedScenarioId, 
+                scene_name: scene,
+                only_characters: true // 只生成成员信息
+            })
+        });
+        
+        clearInterval(intervalId);
+        
+        const d = await r.json();
+        if (d.success) {
+            // 更新成员信息
+            if (d.data.characters && d.data.characters.length > 0) {
+                // 只取前3个作为NPC
+                mems = d.data.characters.slice(0, 3).map(c => ({
+                    a: c.avatar || '👤',
+                    n: c.name,
+                    r: c.role,
+                    b: c.background || c.personality || '未知'
+                }));
+                
+                // 如果AI提供了用户身份信息，则更新全局用户身份
+                if (d.data.user_identity) {
+                    window.userInfo = {
+                        a: d.data.user_identity.avatar || '👤',
+                        n: d.data.user_identity.name || '你',
+                        r: d.data.user_identity.role || '参与者',
+                        b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+                    };
+                } else {
+                    // 默认用户信息
+                    window.userInfo = {
+                        a: '👨‍💼',
+                        n: '你',
+                        r: '参与者',
+                        b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+                    };
+                }
+                
+                renderMems();
+            }
+        } else {
+            alert('生成失败: ' + (d.error || '未知错误'));
+        }
+    } catch (e) {
+        console.error('生成成员时出错:', e);
+        const b = document.querySelector('button[onclick="randMem()"]');
+        b.textContent = '随机换人';
+        alert('生成成员时出错，请稍后再试');
+    } finally {
+        const b = document.querySelector('button[onclick="randMem()"]');
+        b.textContent = '随机换人';
+        b.disabled = false;
+    }
+}
+
+async function regenerateScene() {
+    try {
+        const b = document.querySelector('button[onclick="regenerateScene()"]');
+        const originalText = b.textContent;
+        
+        // 更改按钮文本为动态加载文案
+        const loadingMessages = ['正在设计社交场景...', '正在构建人物关系...', '正在生成对话策略...', '即将完成...'];
+        let currentIndex = 0;
+        let intervalId;
+        
+        // 显示加载文案，显示完后停留在最后一个文案
+        intervalId = setInterval(() => {
+            if (currentIndex < loadingMessages.length) {
+                b.textContent = loadingMessages[currentIndex];
+                currentIndex++;
+            } else {
+                // 已经显示完所有文案，停止定时器并保持在最后一个文案
+                clearInterval(intervalId);
+            }
+        }, 1000);
+        
+        b.disabled = true;
+        
+        const r = await fetch('/api/scenario/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ scene_type: selectedScenarioId, scene_name: scene })
+        });
+        
+        clearInterval(intervalId);
+        
+        const d = await r.json();
+        if (d.success) {
+            // 更新场景描述
+            if (d.data.description) {
+                const sceneDescText = document.getElementById('sceneDescriptionText');
+                const sceneDescEdit = document.getElementById('sceneDescriptionEdit');
+                sceneDescText.innerText = d.data.description;
+                sceneDescEdit.value = d.data.description;
+                
+                // 显示场景信息部分
+                document.getElementById('sceneInfoSection').style.display = 'block';
+                document.getElementById('sceneDescription').style.display = 'block';
+            }
+            
+            // 更新成员信息
+            if (d.data.characters && d.data.characters.length > 0) {
+                // 只取前3个作为NPC
+                mems = d.data.characters.slice(0, 3).map(c => ({
+                    a: c.avatar || '👤',
+                    n: c.name,
+                    r: c.role,
+                    b: c.background || c.personality || '未知'
+                }));
+                
+                // 如果AI提供了用户身份信息，则更新全局用户身份
+                if (d.data.user_identity) {
+                    window.userInfo = {
+                        a: d.data.user_identity.avatar || '👤',
+                        n: d.data.user_identity.name || '你',
+                        r: d.data.user_identity.role || '参与者',
+                        b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+                    };
+                } else {
+                    // 默认用户信息
+                    window.userInfo = {
+                        a: '👨‍💼',
+                        n: '你',
+                        r: '参与者',
+                        b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+                    };
+                }
+                
+                renderMems();
+                
+                // 显示成员信息部分
+                document.getElementById('memberSection').style.display = 'block';
+                document.getElementById('mg').style.display = 'flex';
+                document.getElementById('actionButtons').style.display = 'flex';
+                
+                // 改变按钮文字为"重新生成背景信息"
+                b.textContent = '重新生成背景信息';
+            }
+        } else {
+            b.textContent = '生成背景信息';
+            alert('生成失败: ' + (d.error || '未知错误'));
+        }
+    } catch (e) {
+        console.error('生成场景时出错:', e);
+        const b = document.querySelector('button[onclick="regenerateScene()"]');
+        b.textContent = '生成背景信息';
+        alert('生成场景时出错，请稍后再试');
+    } finally {
+        const b = document.querySelector('button[onclick="regenerateScene()"]');
+        b.disabled = false;
+    }
+}
 async function start(){
 chars=mems;
-try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars})});
+// 获取用户编辑的场景描述
+const sceneDescText = document.getElementById('sceneDescriptionText');
+const sceneDescription = sceneDescText ? sceneDescText.innerText : '';
+// 获取用户编辑的成员信息（包括用户自己的信息）
+const allCharacters = [...chars];
+if (window.userInfo) {
+    allCharacters.push(window.userInfo);
+}
+
+try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:allCharacters,scene_description:sceneDescription,user_info:window.userInfo})});
 const d=await r.json();if(!d.success){alert(d.error);return}
 sid=d.data.session_id;$('cl').innerHTML=chars.map(c=>`<div class="ci" data-n="${c.n}"><span class="ca">${c.a}</span><div class="cn">${c.n}</div></div>`).join('');
-if(d.data.opening)addBot(d.data.opening);updScr(50,50);show('p3')}catch(e){alert(e)}
+if(d.data.opening)addBot(d.data.opening, d.data.opening_speaker);updScr(50,50);show('p3')}catch(e){alert(e)}
 }
 async function send(){
 const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';addUser(t);
