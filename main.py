@@ -74,6 +74,12 @@ class MMReq(BaseModel):
     voice_features: Optional[Dict] = None
 
 
+class ScenarioGenerateReq(BaseModel):
+    scene_type: str = "shandong_dinner"
+    scene_name: str = "家庭聚会"
+    only_characters: bool = False
+
+
 @app.get("/favicon.ico")
 async def favicon():
     return Response(
@@ -550,10 +556,29 @@ select:focus{outline:none;border-color:#667eea}
 
 .sp{width:200px;background:linear-gradient(180deg,#E6F0FF 0%,#FFF 100%);border-right:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
 .st{font-size:14px;color:#666;margin-bottom:18px;text-align:center;font-weight:600}
-.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s}
+.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s;position:relative;overflow:hidden}
 .ci.talk{border:2px solid #C8102E;box-shadow:0 4px 15px rgba(200,16,46,.2)}
-.ca{font-size:32px}
+.ci::after{content:'';position:absolute;inset:auto -40% -60% -40%;height:60%;background:radial-gradient(circle at center,rgba(74,144,226,.08),transparent 70%);pointer-events:none;opacity:0;transition:opacity .2s}
+.ci.talk::after{opacity:1}
+.ca{font-size:18px;line-height:1}
 .cn{font-weight:bold;font-size:14px;color:#333}
+.head{width:44px;height:44px;border-radius:14px;background:linear-gradient(145deg,#fff,#f4f7ff);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 -4px 8px rgba(74,144,226,.12),0 4px 10px rgba(0,0,0,.08);position:relative;flex-shrink:0;transition:transform .2s ease}
+.head-face{width:36px;height:36px;position:relative}
+.eyes{position:absolute;top:10px;left:6px;right:6px;display:flex;justify-content:space-between}
+.eye{width:7px;height:8px;border-radius:50%;background:#222;transition:transform .08s,height .08s}
+.mouth{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);width:14px;height:4px;border-radius:8px;background:#b35f5f;transition:width .08s,height .08s,border-radius .08s,background .12s}
+.ci.state-speaking .head{transform:translateY(-1px) scale(1.03)}
+.ci.state-speaking .mouth{width:16px;height:10px;border-radius:8px;background:#c44b4b;animation:talkMouth .12s infinite alternate}
+.ci.state-reacting .head{animation:nod 1.6s ease-in-out infinite}
+.ci.state-listening .mouth{background:#8a6f6f;width:12px}
+.ci.state-idle .head{filter:saturate(.9)}
+.ci.blink .eye{height:2px;transform:translateY(3px)}
+.ci.look-user .head-face{transform:translateX(-1px)}
+.ci.look-speaker .head-face{transform:translateX(1px)}
+.ci .backchannel{position:absolute;top:4px;right:8px;background:#eef5ff;color:#4A90E2;border:1px solid #dbe9ff;padding:1px 6px;border-radius:10px;font-size:10px;opacity:0;transform:translateY(-4px);transition:all .18s}
+.ci.has-backchannel .backchannel{opacity:1;transform:translateY(0)}
+@keyframes talkMouth{from{height:6px;width:12px}to{height:11px;width:18px}}
+@keyframes nod{0%,100%{transform:translateY(0)}50%{transform:translateY(1.5px)}}
 
 .cc{flex:1;display:flex;flex-direction:column;padding:18px;overflow:hidden}
 .mc2{flex:1;overflow-y:auto;padding:12px;background:#fff;border-radius:12px;border:1px solid #E2E8F0;margin-bottom:12px}
@@ -580,10 +605,29 @@ select:focus{outline:none;border-color:#667eea}
 
 .sp{width:200px;background:linear-gradient(180deg,#E6F0FF 0%,#FFF 100%);border-right:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
 .st{font-size:14px;color:#666;margin-bottom:18px;text-align:center;font-weight:600}
-.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s}
+.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s;position:relative;overflow:hidden}
 .ci.talk{border:2px solid #C8102E;box-shadow:0 4px 15px rgba(200,16,46,.2)}
-.ca{font-size:32px}
+.ci::after{content:'';position:absolute;inset:auto -40% -60% -40%;height:60%;background:radial-gradient(circle at center,rgba(74,144,226,.08),transparent 70%);pointer-events:none;opacity:0;transition:opacity .2s}
+.ci.talk::after{opacity:1}
+.ca{font-size:18px;line-height:1;transition:transform 0.3s}
 .cn{font-weight:bold;font-size:14px;color:#333}
+.head{width:44px;height:44px;border-radius:14px;background:linear-gradient(145deg,#fff,#f4f7ff);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 -4px 8px rgba(74,144,226,.12),0 4px 10px rgba(0,0,0,.08);position:relative;flex-shrink:0;transition:transform .2s ease}
+.head-face{width:36px;height:36px;position:relative;transition:transform .16s}
+.eyes{position:absolute;top:10px;left:6px;right:6px;display:flex;justify-content:space-between}
+.eye{width:7px;height:8px;border-radius:50%;background:#222;transition:transform .08s,height .08s}
+.mouth{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);width:14px;height:4px;border-radius:8px;background:#b35f5f;transition:width .08s,height .08s,border-radius .08s,background .12s}
+.ci.state-speaking .head{transform:translateY(-1px) scale(1.03)}
+.ci.state-speaking .mouth{width:16px;height:10px;border-radius:8px;background:#c44b4b;animation:talkMouth .12s infinite alternate}
+.ci.state-reacting .head{animation:nod 1.6s ease-in-out infinite}
+.ci.state-listening .mouth{background:#8a6f6f;width:12px}
+.ci.state-idle .head{filter:saturate(.9)}
+.ci.blink .eye{height:2px;transform:translateY(3px)}
+.ci.look-user .head-face{transform:translateX(-1px)}
+.ci.look-speaker .head-face{transform:translateX(1px)}
+.ci .backchannel{position:absolute;top:4px;right:8px;background:#eef5ff;color:#4A90E2;border:1px solid #dbe9ff;padding:1px 6px;border-radius:10px;font-size:10px;opacity:0;transform:translateY(-4px);transition:all .18s}
+.ci.has-backchannel .backchannel{opacity:1;transform:translateY(0)}
+@keyframes talkMouth{from{height:6px;width:12px}to{height:11px;width:18px}}
+@keyframes nod{0%,100%{transform:translateY(0)}50%{transform:translateY(1.5px)}}
 
 .sp-metrics{flex:1;margin-top:20px;overflow-y:auto}
 .sp-metrics .mt{font-size:12px;color:#666;font-weight:600;margin-bottom:10px;text-align:center}
@@ -749,6 +793,8 @@ let sid=null,scene='家庭聚会',mems=[],chars=[],hist=[],cam=null,mic=null,isC
 let selectedScenarioId='shandong_dinner';
 let emotionData={confidence:50,calm:50,nervous:20,focus:50};
 let emotionInterval=null;
+let talkingHeadTimer=null,lastVoiceLevel=0,lastSpeaker='';
+const npcRenderState={};
 const pool={
 '家庭聚会':{id:'shandong_dinner',icon:'🍜',members:[{a:'👴',n:'大舅',r:'主陪·长辈',b:'德高望重，极讲规矩'},{a:'👵',n:'大妗子',r:'旁观者',b:'数着你喝了几杯'},{a:'👨',n:'表哥',r:'副陪',b:'最擅长说"我陪一个"'},{a:'👨‍🦳',n:'二叔',r:'话唠长辈',b:'喜欢翻旧账'}]},
 '单位聚餐':{id:'shandong_dinner',icon:'🏢',members:[{a:'👨‍💼',n:'王局长',r:'主陪·局领导',b:'深谙官场礼仪'},{a:'👩',n:'小赵',r:'实诚晚辈',b:'性格耿直'},{a:'🧔',n:'老张',r:'酒桌老炮',b:'三句不离酒'}]},
@@ -767,6 +813,12 @@ const pool={
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
 function detectEmotion(t){if(!t)return'😐';const lower=t.toLowerCase();if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
+function buildHeadCard(c){return `<div class="ci state-idle look-user" data-n="${c.n}"><div class="head"><div class="head-face"><div class="eyes"><span class="eye"></span><span class="eye"></span></div><div class="mouth"></div></div></div><div><div class="cn">${c.n}</div><div style="font-size:11px;color:#64748b">${c.r||''}</div><div class="ca" style="margin-top:2px">${c.a}</div></div><span class="backchannel">嗯</span></div>`}
+function setRenderState(name,patch={}){if(!npcRenderState[name])npcRenderState[name]={state:'idle',look:'user',backchannel:''};Object.assign(npcRenderState[name],patch)}
+function applyRenderState(name){const card=document.querySelector(`.ci[data-n="${name}"]`);if(!card)return;const st=npcRenderState[name]||{state:'idle',look:'user',backchannel:''};card.classList.remove('state-idle','state-listening','state-reacting','state-speaking','look-user','look-speaker','has-backchannel');card.classList.add(`state-${st.state}`);card.classList.add(`look-${st.look||'user'}`);if(st.backchannel){card.classList.add('has-backchannel');const bc=card.querySelector('.backchannel');if(bc)bc.textContent=st.backchannel}}
+function blinkRandom(){document.querySelectorAll('#cl .ci').forEach(card=>{if(Math.random()<0.18){card.classList.add('blink');setTimeout(()=>card.classList.remove('blink'),120)}})}
+function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));if(stress>66||confusion>70)return 'controlled_rescue';if(scene.includes('面试'))return 'pressure_check';return 'table_banter'}
+function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;const names=chars.map(c=>c.n);if(!names.length)return;const beat=inferBeat();const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const wantsToSpeak=(lastVoiceLevel>48||$('ci2').value.trim().length>0)?1:0;const rescueMode=stress>65||confusion>70;let lead=lastSpeaker&&names.includes(lastSpeaker)?lastSpeaker:names[0];if(rescueMode){const hr=names.find(n=>/hr|人事|观察员/i.test(n));if(hr)lead=hr}names.forEach((name,i)=>{if(name===lead){setRenderState(name,{state:'speaking',look:'user',backchannel:''})}else{const reactive=beat==='table_banter'&&Math.random()>0.4;setRenderState(name,{state:reactive?'reacting':'listening',look:'speaker',backchannel:(reactive&&Math.random()>0.7)?'对对':''})}applyRenderState(name)});if(wantsToSpeak){const others=names.filter(n=>n!==lead);if(others.length){const n=others[Math.floor(Math.random()*others.length)];setRenderState(n,{state:'reacting',look:'user',backchannel:'我补一句'});applyRenderState(n)}}blinkRandom()},320)}
 function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
 function goCfg(){show('p2')}
 function selScene(el){document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));el.classList.add('on');scene=el.dataset.s;const p=pool[scene];selectedScenarioId=p?p.id:'shandong_dinner';genMems()}
@@ -1117,28 +1169,30 @@ async function regenerateScene() {
 async function start(){
 chars=mems;
 show('p3');
-$('cl').innerHTML=chars.map(c=>`<div class="ci" data-n="${c.n}"><span class="ca">${c.a}</span><div class="cn">${c.n}</div></div>`).join('');
+$('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
+chars.forEach(c=>{setRenderState(c.n,{state:'listening',look:'user',backchannel:''});applyRenderState(c.n)});
+runNonverbalLoop();
 updScr(50,50);
 try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars})});
 const d=await r.json();if(!d.success){alert(d.error);return}
 sid=d.data.session_id;if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))}catch(e){alert(e)}
 }
 async function send(){
-const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';addUser(t);
+const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';const firstName=chars[0]?.n;if(firstName){setRenderState(firstName,{state:'listening',look:'user',backchannel:'请讲'});applyRenderState(firstName)}addUser(t);
 const multimodal={emotion:emotionData,voice_level:isM?($('volLabel').textContent.replace('麦克风音量: ','').replace('%','')||0):0};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));if(d.data.judgment){$('cb').style.display='flex';$('ct2').textContent=d.data.judgment}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
 }
 function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
-function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp){document.querySelectorAll('.ci').forEach(e=>{e.classList.toggle('talk',e.dataset.n===sp);if(e.dataset.n===sp){const ca=e.querySelector('.ca');ca.style.transform='scale(1.2)';setTimeout(()=>ca.style.transform='scale(1)',300)}})}}
+function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp){lastSpeaker=sp;document.querySelectorAll('.ci').forEach(e=>{const isSpeaker=e.dataset.n===sp;e.classList.toggle('talk',isSpeaker);setRenderState(e.dataset.n,{state:isSpeaker?'speaking':'reacting',look:isSpeaker?'user':'speaker',backchannel:(!isSpeaker&&Math.random()>0.65)?'嗯':''});applyRenderState(e.dataset.n);if(isSpeaker){const ca=e.querySelector('.ca');ca.style.transform='scale(1.2)';setTimeout(()=>ca.style.transform='scale(1)',300)}});setTimeout(()=>{document.querySelectorAll('.ci').forEach(e=>{setRenderState(e.dataset.n,{state:e.dataset.n===sp?'listening':'reacting',look:'speaker',backchannel:''});applyRenderState(e.dataset.n)})},1200)}}
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
 async function end(){if(!sid)return;try{const r=await fetch('/api/session/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success){$('rc').innerHTML=`<div class="rt">${d.data.scene_name}</div><div class="md">${d.data.medal}</div><div class="sg2"><div class="sb2"><div class="sbl">情商</div><div class="sbv">${d.data.scores.emotional}</div></div><div class="sb2"><div class="sbl">反应</div><div class="sbv">${d.data.scores.reaction}</div></div><div class="sb2"><div class="sbl">总分</div><div class="sbv">${d.data.scores.total}</div></div></div><div class="rs">${d.data.summary}</div><div class="rss">${d.data.suggestion}</div><div class="rb2"><button class="btn2" onclick="show('p1')">返回菜单</button></div>`;show('p4')}}catch(e){}}
 async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
 function updateEmotionDisplay(){$('val-confidence').textContent=emotionData.confidence;$('val-calm').textContent=emotionData.calm;$('val-nervous').textContent=emotionData.nervous;$('val-focus').textContent=emotionData.focus;$('bar-confidence').style.width=emotionData.confidence+'%';$('bar-calm').style.width=emotionData.calm+'%';$('bar-nervous').style.width=emotionData.nervous+'%';$('bar-focus').style.width=emotionData.focus+'%'}
 let micAnimId=null;
-function toggleM2(){const b=$('mmb'),micId=$('micSelect').value;if(isM){if(mic)mic.getTracks().forEach(t=>t.stop());if(micAnimId)cancelAnimationFrame(micAnimId);isM=0;b.textContent='🎤 开启麦克风';b.classList.remove('on');$('volLabel').textContent='麦克风音量';for(let i=1;i<=10;i++)$('vs'+i)?.classList.remove('active');$('vi').textContent='❓';$('vt').textContent='未检测'}else{try{const constraints={audio:true};if(micId)constraints.deviceId={exact:micId};navigator.mediaDevices.getUserMedia(constraints).then(s=>{mic=s;isM=1;b.textContent='✅ 已开启';b.classList.add('on');const ctx=new(window.AudioContext||window.webkitAudioContext)(),src=ctx.createMediaStreamSource(mic),an=ctx.createAnalyser();an.fftSize=512;an.smoothingTimeConstant=0.8;src.connect(an);function m(){if(!isM)return;const data=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(data);let sum=0;for(let i=0;i<data.length;i++)sum+=data[i];const avg=sum/data.length;const vol=Math.min(100,Math.round(avg/128*100));const level=Math.ceil(vol/10);for(let i=1;i<=10;i++)$('vs'+i)?.classList.toggle('active',i<=level);$('volLabel').textContent='麦克风音量: '+vol+'%';if(vol>10){$('vi').textContent=vol>70?'🔊':vol>40?'🎵':'🎤';$('vt').textContent=vol>70?'大声':vol>40?'适中':'轻声'}else{$('vi').textContent='❓';$('vt').textContent='安静'}micAnimId=requestAnimationFrame(m)}m()}).catch(()=>alert('无法开启麦克风'))}catch(e){alert('无法开启麦克风: '+e.message)}}}
+function toggleM2(){const b=$('mmb'),micId=$('micSelect').value;if(isM){if(mic)mic.getTracks().forEach(t=>t.stop());if(micAnimId)cancelAnimationFrame(micAnimId);isM=0;b.textContent='🎤 开启麦克风';b.classList.remove('on');$('volLabel').textContent='麦克风音量';for(let i=1;i<=10;i++)$('vs'+i)?.classList.remove('active');$('vi').textContent='❓';$('vt').textContent='未检测';lastVoiceLevel=0}else{try{const constraints={audio:true};if(micId)constraints.deviceId={exact:micId};navigator.mediaDevices.getUserMedia(constraints).then(s=>{mic=s;isM=1;b.textContent='✅ 已开启';b.classList.add('on');const ctx=new(window.AudioContext||window.webkitAudioContext)(),src=ctx.createMediaStreamSource(mic),an=ctx.createAnalyser();an.fftSize=512;an.smoothingTimeConstant=0.8;src.connect(an);function m(){if(!isM)return;const data=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(data);let sum=0;for(let i=0;i<data.length;i++)sum+=data[i];const avg=sum/data.length;const vol=Math.min(100,Math.round(avg/128*100));lastVoiceLevel=vol;const level=Math.ceil(vol/10);for(let i=1;i<=10;i++)$('vs'+i)?.classList.toggle('active',i<=level);$('volLabel').textContent='麦克风音量: '+vol+'%';if(vol>10){$('vi').textContent=vol>70?'🔊':vol>40?'🎵':'🎤';$('vt').textContent=vol>70?'大声':vol>40?'适中':'轻声'}else{$('vi').textContent='❓';$('vt').textContent='安静'}micAnimId=requestAnimationFrame(m)}m()}).catch(()=>alert('无法开启麦克风'))}catch(e){alert('无法开启麦克风: '+e.message)}}}
 function updateMetrics(scores){console.log('[Metrics] 收到分数:', scores);if(scores){const total=Math.round((scores.emotional_intelligence+scores.response_quality+scores.pressure_handling+scores.cultural_fit)/4);$('val-score').textContent=total;$('bar-score').style.width=total+'%'}else{console.log('[Metrics] 分数为空')}}
 function toggleM(){toggleM2()}
 async function loadDevices(){try{const devs=await navigator.mediaDevices.enumerateDevices();const cams=devs.filter(d=>d.kind==='videoinput');const mics=devs.filter(d=>d.kind==='audioinput');$('camSelect').innerHTML='<option value="">📷 选择摄像头</option>'+cams.map((d,i)=>`<option value="${d.deviceId}">${d.label||'摄像头'+(i+1)}</option>`).join('');$('micSelect').innerHTML='<option value="">🎤 选择麦克风</option>'+mics.map((d,i)=>`<option value="${d.deviceId}">${d.label||'麦克风'+(i+1)}</option>`).join('')}catch(e){}}
