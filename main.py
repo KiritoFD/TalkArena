@@ -700,7 +700,7 @@ select:focus{outline:none;border-color:#667eea}
 <div class="section-l">选择场景</div>
 <div class="sg" id="sg"></div>
 <div class="ab" style="margin-top:20px;margin-bottom:20px;">
-<button class="btn2" onclick="regenerateScene()">生成背景信息</button>
+<button class="btn2" id="sceneGenBtn" onclick="regenerateScene()">新增场景时生成背景信息</button>
 </div>
 <div class="section-l" id="sceneInfoSection" style="display:none;">场景信息 <span style="font-size:12px;color:#667eea;cursor:pointer;" onclick="toggleSceneEdit()">✏️ 编辑</span></div>
 <div class="scene-description" id="sceneDescription" style="display:none;background:#f8f9fa;border-radius:10px;padding:15px;margin:10px 0;border-left:4px solid #667eea;">
@@ -810,8 +810,48 @@ const pool={
 '应试教育':{id:'debate',icon:'📚',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'保证公平'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'扼杀创造力'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
 '社交媒体':{id:'debate',icon:'📱',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'连接世界'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'隐私泄露'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]}
 };
+const presetSceneDescriptions={
+'家庭聚会':'春节返乡家庭聚会，长辈主导节奏，话题围绕近况与发展，氛围热闹但有压力。',
+'单位聚餐':'部门团建后的单位聚餐，领导在场，交流夹杂工作与人情，强调分寸与礼节。',
+'商务宴请':'与合作方的商务宴请，目标是推进合作并建立信任，既要热情也要专业。',
+'同学聚会':'毕业多年后的同学重聚，聊天轻松却暗含比较，考验表达与边界感。',
+'招待客户':'东道主招待重点客户的晚宴，核心是维护关系并推进合作意向。',
+'技术面试':'技术岗位终面，面试官关注技术深度、问题拆解和压力下表达。',
+'HR面试':'HR主导的综合面试，重点评估沟通、价值观和团队匹配度。',
+'行为面试':'行为事件面试，要求候选人用真实案例呈现决策、协作与复盘能力。',
+'群面':'多候选人群面，关注协作、领导力、推进效率和观点影响力。',
+'AI对就业':'围绕AI与就业影响的结构化辩论，强调论证、反驳与证据质量。',
+'远程工作':'围绕远程办公利弊的辩论，关注效率、协作和组织管理。',
+'应试教育':'围绕应试教育价值与局限的辩论，检验逻辑清晰度与立场一致性。',
+'社交媒体':'围绕社交媒体影响的辩论，涉及隐私、信息质量与社会连接。'
+};
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
+function isPresetScene(){return !!pool[scene]}
+function applySceneInfo(description){
+    const sceneDescText=document.getElementById('sceneDescriptionText');
+    const sceneDescEdit=document.getElementById('sceneDescriptionEdit');
+    sceneDescText.innerText=description||'';
+    sceneDescEdit.value=description||'';
+    document.getElementById('sceneInfoSection').style.display=description?'block':'none';
+    document.getElementById('sceneDescription').style.display=description?'block':'none';
+}
+function refreshSceneInfoForSelection(){
+    const btn=document.getElementById('sceneGenBtn');
+    const preset=isPresetScene();
+    if(preset){
+        applySceneInfo(presetSceneDescriptions[scene]||`${scene}场景，角色和背景已预置。`);
+        document.getElementById('memberSection').style.display='block';
+        document.getElementById('mg').style.display='flex';
+        document.getElementById('actionButtons').style.display='flex';
+        btn.disabled=true;
+        btn.textContent='已有场景已预置背景信息';
+        return;
+    }
+    applySceneInfo('');
+    btn.disabled=false;
+    btn.textContent='新增场景时生成背景信息';
+}
 function detectEmotion(t){if(!t)return'😐';const lower=t.toLowerCase();if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
 function buildHeadCard(c){return `<div class="ci state-idle look-user" data-n="${c.n}"><div class="head"><div class="head-face"><div class="eyes"><span class="eye"></span><span class="eye"></span></div><div class="mouth"></div></div></div><div><div class="cn">${c.n}</div><div style="font-size:11px;color:#64748b">${c.r||''}</div><div class="ca" style="margin-top:2px">${c.a}</div></div><span class="backchannel">嗯</span></div>`}
 function setRenderState(name,patch={}){if(!npcRenderState[name])npcRenderState[name]={state:'idle',look:'user',backchannel:''};Object.assign(npcRenderState[name],patch)}
@@ -866,6 +906,7 @@ function genMems(){
     }
     renderMems();
     renderScenes();
+    refreshSceneInfoForSelection();
 }
 function renderScenes(){$('sg').innerHTML=scenes.map(s=>`<div class="sc${s===scene?' on':''}" data-s="${s}" onclick="selScene(this)"><div style="font-size:24px">${pool[s].icon}</div><div>${s}</div></div>`).join('')}
 function renderMems(){
@@ -1069,7 +1110,11 @@ async function randMem() {
 
 async function regenerateScene() {
     try {
-        const b = document.querySelector('button[onclick="regenerateScene()"]');
+        const b = document.getElementById('sceneGenBtn');
+        if(isPresetScene()){
+            refreshSceneInfoForSelection();
+            return;
+        }
         const originalText = b.textContent;
         
         // 更改按钮文本为动态加载文案
@@ -1153,16 +1198,16 @@ async function regenerateScene() {
                 b.textContent = '重新生成背景信息';
             }
         } else {
-            b.textContent = '生成背景信息';
+            b.textContent = '新增场景时生成背景信息';
             alert('生成失败: ' + (d.error || '未知错误'));
         }
     } catch (e) {
         console.error('生成场景时出错:', e);
-        const b = document.querySelector('button[onclick="regenerateScene()"]');
-        b.textContent = '生成背景信息';
+        const b = document.getElementById('sceneGenBtn');
+        b.textContent = '新增场景时生成背景信息';
         alert('生成场景时出错，请稍后再试');
     } finally {
-        const b = document.querySelector('button[onclick="regenerateScene()"]');
+        const b = document.getElementById('sceneGenBtn');
         b.disabled = false;
     }
 }
