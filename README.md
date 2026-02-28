@@ -298,3 +298,35 @@ TTS_ENABLED=0 python app.py
 ```
 
 **服务地址**: `http://127.0.0.1:1234`
+
+---
+
+## 多人 Talking Head 架构
+
+推荐入口：`core/multimodal_multiagent/orchestrator.py`
+
+协议与文档：
+
+- `core/multimodal_multiagent/contracts.py`
+- `docs/ARCHITECTURE_MULTIMODAL_MULTIAGENT.md`
+- `docs/MULTIMODAL_MULTIAGENT_TECH_IMPLEMENTATION.md`
+
+该架构用于一对多场景下提升真实感：仅赢家角色执行重生成/TTS，其余角色持续输出非语言反应。
+
+
+### NVIDIA API 部署（可选）
+
+项目已支持 OpenAI 兼容的 NVIDIA API：
+
+```bash
+export LLM_PROVIDER=nvidia
+export LLM_API_KEY="nvapi-..."
+export LLM_BASE_URL="https://integrate.api.nvidia.com/v1"  # 可省略，nvidia provider 默认此值
+export LLM_MODEL="meta/llama-3.1-70b-instruct"
+```
+
+模型可用性探测脚本：
+
+```bash
+NVIDIA_API_KEY="nvapi-..." python scripts/check_nvidia_api.py
+```
