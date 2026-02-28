@@ -58,7 +58,6 @@ class FakeEngine:
                     "cultural_fit": 72,
                 },
                 "game_over": False,
-                "npc_feedback_quality": {"label": "良好", "response_quality": 68, "pressure_handling": 66},
             },
         )
 
@@ -111,8 +110,6 @@ class AppFullProcessTests(unittest.TestCase):
         self.assertTrue(chat_data["success"])
         self.assertIn("ai_text", chat_data["data"])
         self.assertIn("scores", chat_data["data"])
-        self.assertIn("npc_feedback_quality", chat_data["data"])
-        self.assertIn("label", chat_data["data"]["npc_feedback_quality"])
 
         rescue_resp = self.client.post("/api/chat/rescue", json={"session_id": sid, "message": ""})
         self.assertEqual(rescue_resp.status_code, 200)
