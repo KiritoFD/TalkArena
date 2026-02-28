@@ -27,6 +27,9 @@ class LLMLoader:
         )
         self.request_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
         self.max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
+        self.enable_local_fallback = (
+            os.getenv("LLM_ENABLE_LOCAL_FALLBACK", "1").strip().lower() not in {"0", "false", "no"}
+        )
 
     def _resolve_provider(self, provider: str, api_key: str) -> str:
         if provider in ("openai", "nvidia"):
@@ -38,14 +41,39 @@ class LLMLoader:
     def load(self):
         from openai import OpenAI
 
-        if not self.api_key:
-            raise RuntimeError(
-                "Missing API key. Set LLM_API_KEY or OPENAI_API_KEY in environment variables."
+            endpoints.append(
+                {
+                    "provider": provider,
+                    "api_key": key,
+                    "model": model,
+                    "base_url": base_url,
+                }
             )
 
-        kwargs = {"api_key": self.api_key}
-        if self.base_url:
-            kwargs["base_url"] = self.base_url
+        return endpoints
+
+    def _resolve_provider(self, provider: str, api_key: str) -> str:
+        if provider in ("openai", "nvidia"):
+            return provider
+        if api_key and api_key.startswith("nvapi-"):
+            return "nvidia"
+        return "openai"
+
+    def load(self):
+        if not self.endpoints:
+            if not self.enable_local_fallback:
+                raise RuntimeError(
+                    "No API endpoints configured and local fallback disabled."
+                )
+            self._get_local_fallback().load()
+            return
+
+        from openai import OpenAI
+
+        endpoint = self.endpoints[self.active_endpoint]
+        kwargs = {"api_key": endpoint["api_key"]}
+        if endpoint["base_url"]:
+            kwargs["base_url"] = endpoint["base_url"]
 
         self.client = OpenAI(**kwargs)
         print(
@@ -64,9 +92,38 @@ class LLMLoader:
     def generate(
         self, text: str, max_new_tokens: int = 2000, temperature: float = 0.7
     ) -> str:
-        if self.client is None:
-            self.load()
-        return self._generate_api(text, max_new_tokens, temperature)
+        errors = []
+        endpoint_order = [self.active_endpoint] + [
+            idx for idx in range(len(self.endpoints)) if idx != self.active_endpoint
+        ]
+
+        for endpoint_idx in endpoint_order:
+            try:
+                self._switch_endpoint(endpoint_idx)
+                return self._generate_api(text, max_new_tokens, temperature)
+            except Exception as e:
+                errors.append(f"endpoint#{endpoint_idx + 1}: {type(e).__name__}: {e}")
+                print(f"[LLMLoader] Switching to next endpoint due to error: {e}")
+
+        if self.enable_local_fallback:
+            try:
+                local = self._get_local_fallback()
+                self.provider = "local"
+                self.model_name = local.model_id
+                self.base_url = "local"
+                print("[LLMLoader] Falling back to local ModelScope 0.5B model...")
+                return local.generate(text, max_new_tokens=max_new_tokens, temperature=temperature)
+            except Exception as e:
+                errors.append(f"local_fallback: {type(e).__name__}: {e}")
+
+        raise RuntimeError("All API endpoints failed: " + " | ".join(errors))
+
+    def _switch_endpoint(self, endpoint_idx: int) -> None:
+        if self.active_endpoint == endpoint_idx and self.client is not None:
+            return
+        self.active_endpoint = endpoint_idx
+        self.client = None
+        self.load()
 
     def _generate_api(self, text: str, max_new_tokens: int, temperature: float) -> str:
         for attempt in range(self.max_retries + 1):
