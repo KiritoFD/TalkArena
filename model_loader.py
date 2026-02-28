@@ -1,17 +1,39 @@
-﻿import os
+import os
 import time
+from typing import List
 
 
 class LLMLoader:
-    """Pure API LLM loader for serverless environments."""
+    """API LLM loader with OpenAI/NVIDIA-compatible support."""
+
+    NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
     def __init__(self):
         self.client = None
-        self.model_name = os.getenv("LLM_MODEL", "gpt-4o-mini")
-        self.base_url = os.getenv("LLM_BASE_URL") or None
+        self.provider = (os.getenv("LLM_PROVIDER", "auto") or "auto").lower()
         self.api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+
+        resolved_provider = self._resolve_provider(self.provider, self.api_key)
+        self.provider = resolved_provider
+
+        default_model = (
+            os.getenv("NVIDIA_LLM_MODEL", "meta/llama-3.1-70b-instruct")
+            if resolved_provider == "nvidia"
+            else "gpt-4o-mini"
+        )
+        self.model_name = os.getenv("LLM_MODEL", default_model)
+        self.base_url = os.getenv("LLM_BASE_URL") or (
+            self.NVIDIA_BASE_URL if resolved_provider == "nvidia" else None
+        )
         self.request_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
         self.max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
+
+    def _resolve_provider(self, provider: str, api_key: str) -> str:
+        if provider in ("openai", "nvidia"):
+            return provider
+        if api_key and api_key.startswith("nvapi-"):
+            return "nvidia"
+        return "openai"
 
     def load(self):
         from openai import OpenAI
@@ -26,10 +48,18 @@ class LLMLoader:
             kwargs["base_url"] = self.base_url
 
         self.client = OpenAI(**kwargs)
-        print(f"[LLMLoader] API mode enabled, model={self.model_name}")
+        print(
+            f"[LLMLoader] API mode enabled, provider={self.provider}, model={self.model_name}, base_url={self.base_url or 'default'}"
+        )
 
     def get_model_name(self) -> str:
-        return f"{self.model_name} (API)"
+        return f"{self.model_name} ({self.provider})"
+
+    def list_models(self) -> List[str]:
+        if self.client is None:
+            self.load()
+        models = self.client.models.list()
+        return sorted(m.id for m in models.data)
 
     def generate(
         self, text: str, max_new_tokens: int = 2000, temperature: float = 0.7
