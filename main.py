@@ -22,6 +22,99 @@ engine = None
 mm_analyzer = None
 
 
+class _MockResult:
+    def __init__(self, stage: str, data: Dict):
+        self.stage = stage
+        self.data = data
+
+
+class _MockThinkResult:
+    def __init__(self, content: str, speaker: str):
+        self.content = content
+        self.metadata = {"speaker": speaker}
+
+
+class _MockDialogueAgent:
+    def think(self, context: Dict):
+        chars = context.get("characters") or []
+        speaker = chars[0].get("name", "主持人") if chars else "主持人"
+        return _MockThinkResult("欢迎进入多NPC实战演练，我们开始吧。", speaker)
+
+
+class _MockMultiAgent:
+    def __init__(self):
+        self.agents_list = [_MockDialogueAgent()]
+
+
+class FallbackTalkArenaEngine:
+    """轻量回退引擎：模型不可用时保障前端全流程可用。"""
+
+    def __init__(self):
+        self.sessions: Dict[str, Dict] = {}
+        self.multi_agent = _MockMultiAgent()
+
+    def start_session(self, scenario_id: str, characters: List[Dict], scene_name: str, scene_description: str, user_info: Dict):
+        session_id = f"demo_{len(self.sessions) + 1}"
+        self.sessions[session_id] = {
+            "scenario": {"characters": characters or [{"name": "主持人", "role": "引导者"}]},
+            "turn": 0,
+            "scene_name": scene_name,
+        }
+        return session_id
+
+    def process_turn(self, session_id: str, message: str, multimodal: Dict):
+        session = self.sessions[session_id]
+        session["turn"] += 1
+        turn = session["turn"]
+        chars = session["scenario"].get("characters", [])
+        speaker = chars[turn % len(chars)].get("name", "主持人") if chars else "主持人"
+
+        emotion = (multimodal or {}).get("emotion", {})
+        nervous = int(emotion.get("nervous", 20))
+        focus = int(emotion.get("focus", 60))
+        confidence = int(emotion.get("confidence", 55))
+
+        response_quality = max(45, min(95, 65 + (focus - nervous) // 3))
+        pressure_handling = max(40, min(95, 68 + (confidence - nervous) // 4))
+        emotional_intelligence = max(45, min(95, 66 + (focus // 8)))
+        cultural_fit = max(45, min(95, 64 + (confidence // 10)))
+
+        quality_label = "优秀" if response_quality >= 75 and pressure_handling >= 72 else "良好" if response_quality >= 65 else "待提升"
+        judgment = f"NPC反馈质量评估：{quality_label}。建议继续用结构化表达并给出量化证据。"
+
+        payload = {
+            "ai_text": f"{speaker}：我听到你说“{message}”。请继续展开一个具体案例。",
+            "speaker": speaker,
+            "judgment": judgment,
+            "npc_feedback_quality": {
+                "label": quality_label,
+                "response_quality": response_quality,
+                "pressure_handling": pressure_handling,
+            },
+            "new_dominance": {"user": 50 + min(20, turn * 2), "ai": 50 - min(20, turn * 2)},
+            "scores": {
+                "emotional_intelligence": emotional_intelligence,
+                "response_quality": response_quality,
+                "pressure_handling": pressure_handling,
+                "cultural_fit": cultural_fit,
+            },
+            "game_over": turn >= 4,
+        }
+        yield _MockResult("complete", payload)
+
+    def get_rescue_suggestion(self, session_id: str):
+        return "救场建议：先复述问题，再按STAR（情境-任务-行动-结果）给出30秒结构化回答。"
+
+    def end_session(self, session_id: str):
+        return {
+            "scene_name": self.sessions.get(session_id, {}).get("scene_name", "模拟对话"),
+            "medal": "🥇",
+            "scores": {"emotional": 82, "reaction": 79, "total": 81},
+            "summary": "你在多NPC环境中维持了稳定表达，能在追问下保持结构。",
+            "suggestion": "下一轮提升点：减少重复句，增加结果数字与复盘反思。",
+        }
+
+
 def get_engine():
     global engine
     if engine is None:
@@ -33,9 +126,8 @@ def get_engine():
             llm.load()
             engine = TalkArenaEngine(llm, enable_tts=True)
         except Exception as e:
-            raise RuntimeError(
-                "Engine initialization failed. Ensure model dependencies are installed and model files are available."
-            ) from e
+            print(f"[Engine] 使用回退引擎，原因: {e}")
+            engine = FallbackTalkArenaEngine()
     return engine
 
 
@@ -72,6 +164,12 @@ class MMReq(BaseModel):
     text: str
     emotion_features: Optional[Dict] = None
     voice_features: Optional[Dict] = None
+
+
+class ScenarioGenerateReq(BaseModel):
+    scene_type: str = "shandong_dinner"
+    scene_name: str = "家庭聚会"
+    only_characters: bool = False
 
 
 @app.get("/favicon.ico")
@@ -550,10 +648,29 @@ select:focus{outline:none;border-color:#667eea}
 
 .sp{width:200px;background:linear-gradient(180deg,#E6F0FF 0%,#FFF 100%);border-right:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
 .st{font-size:14px;color:#666;margin-bottom:18px;text-align:center;font-weight:600}
-.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s}
+.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s;position:relative;overflow:hidden}
 .ci.talk{border:2px solid #C8102E;box-shadow:0 4px 15px rgba(200,16,46,.2)}
-.ca{font-size:32px}
+.ci::after{content:'';position:absolute;inset:auto -40% -60% -40%;height:60%;background:radial-gradient(circle at center,rgba(74,144,226,.08),transparent 70%);pointer-events:none;opacity:0;transition:opacity .2s}
+.ci.talk::after{opacity:1}
+.ca{font-size:18px;line-height:1}
 .cn{font-weight:bold;font-size:14px;color:#333}
+.head{width:44px;height:44px;border-radius:14px;background:linear-gradient(145deg,#fff,#f4f7ff);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 -4px 8px rgba(74,144,226,.12),0 4px 10px rgba(0,0,0,.08);position:relative;flex-shrink:0;transition:transform .2s ease}
+.head-face{width:36px;height:36px;position:relative}
+.eyes{position:absolute;top:10px;left:6px;right:6px;display:flex;justify-content:space-between}
+.eye{width:7px;height:8px;border-radius:50%;background:#222;transition:transform .08s,height .08s}
+.mouth{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);width:14px;height:4px;border-radius:8px;background:#b35f5f;transition:width .08s,height .08s,border-radius .08s,background .12s}
+.ci.state-speaking .head{transform:translateY(-1px) scale(1.03)}
+.ci.state-speaking .mouth{width:16px;height:10px;border-radius:8px;background:#c44b4b;animation:talkMouth .12s infinite alternate}
+.ci.state-reacting .head{animation:nod 1.6s ease-in-out infinite}
+.ci.state-listening .mouth{background:#8a6f6f;width:12px}
+.ci.state-idle .head{filter:saturate(.9)}
+.ci.blink .eye{height:2px;transform:translateY(3px)}
+.ci.look-user .head-face{transform:translateX(-1px)}
+.ci.look-speaker .head-face{transform:translateX(1px)}
+.ci .backchannel{position:absolute;top:4px;right:8px;background:#eef5ff;color:#4A90E2;border:1px solid #dbe9ff;padding:1px 6px;border-radius:10px;font-size:10px;opacity:0;transform:translateY(-4px);transition:all .18s}
+.ci.has-backchannel .backchannel{opacity:1;transform:translateY(0)}
+@keyframes talkMouth{from{height:6px;width:12px}to{height:11px;width:18px}}
+@keyframes nod{0%,100%{transform:translateY(0)}50%{transform:translateY(1.5px)}}
 
 .cc{flex:1;display:flex;flex-direction:column;padding:18px;overflow:hidden}
 .mc2{flex:1;overflow-y:auto;padding:12px;background:#fff;border-radius:12px;border:1px solid #E2E8F0;margin-bottom:12px}
@@ -580,10 +697,29 @@ select:focus{outline:none;border-color:#667eea}
 
 .sp{width:200px;background:linear-gradient(180deg,#E6F0FF 0%,#FFF 100%);border-right:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
 .st{font-size:14px;color:#666;margin-bottom:18px;text-align:center;font-weight:600}
-.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s}
+.ci{display:flex;align-items:center;gap:12px;padding:12px;background:#fff;border-radius:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(0,0,0,.05);transition:all .2s;position:relative;overflow:hidden}
 .ci.talk{border:2px solid #C8102E;box-shadow:0 4px 15px rgba(200,16,46,.2)}
-.ca{font-size:32px}
+.ci::after{content:'';position:absolute;inset:auto -40% -60% -40%;height:60%;background:radial-gradient(circle at center,rgba(74,144,226,.08),transparent 70%);pointer-events:none;opacity:0;transition:opacity .2s}
+.ci.talk::after{opacity:1}
+.ca{font-size:18px;line-height:1;transition:transform 0.3s}
 .cn{font-weight:bold;font-size:14px;color:#333}
+.head{width:44px;height:44px;border-radius:14px;background:linear-gradient(145deg,#fff,#f4f7ff);display:flex;align-items:center;justify-content:center;box-shadow:inset 0 -4px 8px rgba(74,144,226,.12),0 4px 10px rgba(0,0,0,.08);position:relative;flex-shrink:0;transition:transform .2s ease}
+.head-face{width:36px;height:36px;position:relative;transition:transform .16s}
+.eyes{position:absolute;top:10px;left:6px;right:6px;display:flex;justify-content:space-between}
+.eye{width:7px;height:8px;border-radius:50%;background:#222;transition:transform .08s,height .08s}
+.mouth{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);width:14px;height:4px;border-radius:8px;background:#b35f5f;transition:width .08s,height .08s,border-radius .08s,background .12s}
+.ci.state-speaking .head{transform:translateY(-1px) scale(1.03)}
+.ci.state-speaking .mouth{width:16px;height:10px;border-radius:8px;background:#c44b4b;animation:talkMouth .12s infinite alternate}
+.ci.state-reacting .head{animation:nod 1.6s ease-in-out infinite}
+.ci.state-listening .mouth{background:#8a6f6f;width:12px}
+.ci.state-idle .head{filter:saturate(.9)}
+.ci.blink .eye{height:2px;transform:translateY(3px)}
+.ci.look-user .head-face{transform:translateX(-1px)}
+.ci.look-speaker .head-face{transform:translateX(1px)}
+.ci .backchannel{position:absolute;top:4px;right:8px;background:#eef5ff;color:#4A90E2;border:1px solid #dbe9ff;padding:1px 6px;border-radius:10px;font-size:10px;opacity:0;transform:translateY(-4px);transition:all .18s}
+.ci.has-backchannel .backchannel{opacity:1;transform:translateY(0)}
+@keyframes talkMouth{from{height:6px;width:12px}to{height:11px;width:18px}}
+@keyframes nod{0%,100%{transform:translateY(0)}50%{transform:translateY(1.5px)}}
 
 .sp-metrics{flex:1;margin-top:20px;overflow-y:auto}
 .sp-metrics .mt{font-size:12px;color:#666;font-weight:600;margin-bottom:10px;text-align:center}
@@ -656,7 +792,7 @@ select:focus{outline:none;border-color:#667eea}
 <div class="section-l">选择场景</div>
 <div class="sg" id="sg"></div>
 <div class="ab" style="margin-top:20px;margin-bottom:20px;">
-<button class="btn2" onclick="regenerateScene()">生成背景信息</button>
+<button class="btn2" id="sceneGenBtn" onclick="regenerateScene()">新增场景时生成背景信息</button>
 </div>
 <div class="section-l" id="sceneInfoSection" style="display:none;">场景信息 <span style="font-size:12px;color:#667eea;cursor:pointer;" onclick="toggleSceneEdit()">✏️ 编辑</span></div>
 <div class="scene-description" id="sceneDescription" style="display:none;background:#f8f9fa;border-radius:10px;padding:15px;margin:10px 0;border-left:4px solid #667eea;">
@@ -749,6 +885,8 @@ let sid=null,scene='家庭聚会',mems=[],chars=[],hist=[],cam=null,mic=null,isC
 let selectedScenarioId='shandong_dinner';
 let emotionData={confidence:50,calm:50,nervous:20,focus:50};
 let emotionInterval=null;
+let talkingHeadTimer=null,lastVoiceLevel=0,lastSpeaker='';
+const npcRenderState={};
 const pool={
 '家庭聚会':{id:'shandong_dinner',icon:'🍜',members:[{a:'👴',n:'大舅',r:'主陪·长辈',b:'德高望重，极讲规矩'},{a:'👵',n:'大妗子',r:'旁观者',b:'数着你喝了几杯'},{a:'👨',n:'表哥',r:'副陪',b:'最擅长说"我陪一个"'},{a:'👨‍🦳',n:'二叔',r:'话唠长辈',b:'喜欢翻旧账'}]},
 '单位聚餐':{id:'shandong_dinner',icon:'🏢',members:[{a:'👨‍💼',n:'王局长',r:'主陪·局领导',b:'深谙官场礼仪'},{a:'👩',n:'小赵',r:'实诚晚辈',b:'性格耿直'},{a:'🧔',n:'老张',r:'酒桌老炮',b:'三句不离酒'}]},
@@ -764,9 +902,55 @@ const pool={
 '应试教育':{id:'debate',icon:'📚',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'保证公平'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'扼杀创造力'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
 '社交媒体':{id:'debate',icon:'📱',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'连接世界'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'隐私泄露'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]}
 };
+const presetSceneDescriptions={
+'家庭聚会':'春节返乡家庭聚会，长辈主导节奏，话题围绕近况与发展，氛围热闹但有压力。',
+'单位聚餐':'部门团建后的单位聚餐，领导在场，交流夹杂工作与人情，强调分寸与礼节。',
+'商务宴请':'与合作方的商务宴请，目标是推进合作并建立信任，既要热情也要专业。',
+'同学聚会':'毕业多年后的同学重聚，聊天轻松却暗含比较，考验表达与边界感。',
+'招待客户':'东道主招待重点客户的晚宴，核心是维护关系并推进合作意向。',
+'技术面试':'技术岗位终面，面试官关注技术深度、问题拆解和压力下表达。',
+'HR面试':'HR主导的综合面试，重点评估沟通、价值观和团队匹配度。',
+'行为面试':'行为事件面试，要求候选人用真实案例呈现决策、协作与复盘能力。',
+'群面':'多候选人群面，关注协作、领导力、推进效率和观点影响力。',
+'AI对就业':'围绕AI与就业影响的结构化辩论，强调论证、反驳与证据质量。',
+'远程工作':'围绕远程办公利弊的辩论，关注效率、协作和组织管理。',
+'应试教育':'围绕应试教育价值与局限的辩论，检验逻辑清晰度与立场一致性。',
+'社交媒体':'围绕社交媒体影响的辩论，涉及隐私、信息质量与社会连接。'
+};
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
+function isPresetScene(){return !!pool[scene]}
+function applySceneInfo(description){
+    const sceneDescText=document.getElementById('sceneDescriptionText');
+    const sceneDescEdit=document.getElementById('sceneDescriptionEdit');
+    sceneDescText.innerText=description||'';
+    sceneDescEdit.value=description||'';
+    document.getElementById('sceneInfoSection').style.display=description?'block':'none';
+    document.getElementById('sceneDescription').style.display=description?'block':'none';
+}
+function refreshSceneInfoForSelection(){
+    const btn=document.getElementById('sceneGenBtn');
+    const preset=isPresetScene();
+    if(preset){
+        applySceneInfo(presetSceneDescriptions[scene]||`${scene}场景，角色和背景已预置。`);
+        document.getElementById('memberSection').style.display='block';
+        document.getElementById('mg').style.display='flex';
+        document.getElementById('actionButtons').style.display='flex';
+        btn.disabled=true;
+        btn.textContent='已有场景已预置背景信息';
+        return;
+    }
+    applySceneInfo('');
+    btn.disabled=false;
+    btn.textContent='新增场景时生成背景信息';
+}
 function detectEmotion(t){if(!t)return'😐';const lower=t.toLowerCase();if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
+function buildHeadCard(c){return `<div class="ci state-idle look-user" data-n="${c.n}"><div class="head"><div class="head-face"><div class="eyes"><span class="eye"></span><span class="eye"></span></div><div class="mouth"></div></div></div><div><div class="cn">${c.n}</div><div style="font-size:11px;color:#64748b">${c.r||''}</div><div class="ca" style="margin-top:2px">${c.a}</div></div><span class="backchannel">嗯</span></div>`}
+function setRenderState(name,patch={}){if(!npcRenderState[name])npcRenderState[name]={state:'idle',look:'user',backchannel:''};Object.assign(npcRenderState[name],patch)}
+function applyRenderState(name){const card=document.querySelector(`.ci[data-n="${name}"]`);if(!card)return;const st=npcRenderState[name]||{state:'idle',look:'user',backchannel:''};card.classList.remove('state-idle','state-listening','state-reacting','state-speaking','look-user','look-speaker','has-backchannel');card.classList.add(`state-${st.state}`);card.classList.add(`look-${st.look||'user'}`);if(st.backchannel){card.classList.add('has-backchannel');const bc=card.querySelector('.backchannel');if(bc)bc.textContent=st.backchannel}}
+function blinkRandom(){document.querySelectorAll('#cl .ci').forEach(card=>{if(Math.random()<0.18){card.classList.add('blink');setTimeout(()=>card.classList.remove('blink'),120)}})}
+function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));if(stress>66||confusion>70)return 'controlled_rescue';if(scene.includes('面试'))return 'pressure_check';return 'table_banter'}
+function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;const names=chars.map(c=>c.n);if(!names.length)return;const beat=inferBeat();const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const wantsToSpeak=(lastVoiceLevel>48||$('ci2').value.trim().length>0)?1:0;const rescueMode=stress>65||confusion>70;let lead=lastSpeaker&&names.includes(lastSpeaker)?lastSpeaker:names[0];if(rescueMode){const hr=names.find(n=>/hr|人事|观察员/i.test(n));if(hr)lead=hr}names.forEach((name,i)=>{if(name===lead){setRenderState(name,{state:'speaking',look:'user',backchannel:''})}else{const reactive=beat==='table_banter'&&Math.random()>0.4;setRenderState(name,{state:reactive?'reacting':'listening',look:'speaker',backchannel:(reactive&&Math.random()>0.7)?'对对':''})}applyRenderState(name)});if(wantsToSpeak){const others=names.filter(n=>n!==lead);if(others.length){const n=others[Math.floor(Math.random()*others.length)];setRenderState(n,{state:'reacting',look:'user',backchannel:'我补一句'});applyRenderState(n)}}blinkRandom()},320)}
 function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
 function goCfg(){show('p2')}
 function selScene(el){document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));el.classList.add('on');scene=el.dataset.s;const p=pool[scene];selectedScenarioId=p?p.id:'shandong_dinner';genMems()}
@@ -814,6 +998,7 @@ function genMems(){
     }
     renderMems();
     renderScenes();
+    refreshSceneInfoForSelection();
 }
 function renderScenes(){$('sg').innerHTML=scenes.map(s=>`<div class="sc${s===scene?' on':''}" data-s="${s}" onclick="selScene(this)"><div style="font-size:24px">${pool[s].icon}</div><div>${s}</div></div>`).join('')}
 function renderMems(){
@@ -1017,7 +1202,11 @@ async function randMem() {
 
 async function regenerateScene() {
     try {
-        const b = document.querySelector('button[onclick="regenerateScene()"]');
+        const b = document.getElementById('sceneGenBtn');
+        if(isPresetScene()){
+            refreshSceneInfoForSelection();
+            return;
+        }
         const originalText = b.textContent;
         
         // 更改按钮文本为动态加载文案
@@ -1101,44 +1290,46 @@ async function regenerateScene() {
                 b.textContent = '重新生成背景信息';
             }
         } else {
-            b.textContent = '生成背景信息';
+            b.textContent = '新增场景时生成背景信息';
             alert('生成失败: ' + (d.error || '未知错误'));
         }
     } catch (e) {
         console.error('生成场景时出错:', e);
-        const b = document.querySelector('button[onclick="regenerateScene()"]');
-        b.textContent = '生成背景信息';
+        const b = document.getElementById('sceneGenBtn');
+        b.textContent = '新增场景时生成背景信息';
         alert('生成场景时出错，请稍后再试');
     } finally {
-        const b = document.querySelector('button[onclick="regenerateScene()"]');
+        const b = document.getElementById('sceneGenBtn');
         b.disabled = false;
     }
 }
 async function start(){
 chars=mems;
 show('p3');
-$('cl').innerHTML=chars.map(c=>`<div class="ci" data-n="${c.n}"><span class="ca">${c.a}</span><div class="cn">${c.n}</div></div>`).join('');
+$('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
+chars.forEach(c=>{setRenderState(c.n,{state:'listening',look:'user',backchannel:''});applyRenderState(c.n)});
+runNonverbalLoop();
 updScr(50,50);
 try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars})});
 const d=await r.json();if(!d.success){alert(d.error);return}
 sid=d.data.session_id;if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))}catch(e){alert(e)}
 }
 async function send(){
-const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';addUser(t);
+const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';const firstName=chars[0]?.n;if(firstName){setRenderState(firstName,{state:'listening',look:'user',backchannel:'请讲'});applyRenderState(firstName)}addUser(t);
 const multimodal={emotion:emotionData,voice_level:isM?($('volLabel').textContent.replace('麦克风音量: ','').replace('%','')||0):0};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
-const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));if(d.data.judgment){$('cb').style.display='flex';$('ct2').textContent=d.data.judgment}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
+const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));if(d.data.judgment){$('cb').style.display='flex';let judge=d.data.judgment;if(d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}$('ct2').textContent=judge}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
 }
 function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
-function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp){document.querySelectorAll('.ci').forEach(e=>{e.classList.toggle('talk',e.dataset.n===sp);if(e.dataset.n===sp){const ca=e.querySelector('.ca');ca.style.transform='scale(1.2)';setTimeout(()=>ca.style.transform='scale(1)',300)}})}}
+function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp){lastSpeaker=sp;document.querySelectorAll('.ci').forEach(e=>{const isSpeaker=e.dataset.n===sp;e.classList.toggle('talk',isSpeaker);setRenderState(e.dataset.n,{state:isSpeaker?'speaking':'reacting',look:isSpeaker?'user':'speaker',backchannel:(!isSpeaker&&Math.random()>0.65)?'嗯':''});applyRenderState(e.dataset.n);if(isSpeaker){const ca=e.querySelector('.ca');ca.style.transform='scale(1.2)';setTimeout(()=>ca.style.transform='scale(1)',300)}});setTimeout(()=>{document.querySelectorAll('.ci').forEach(e=>{setRenderState(e.dataset.n,{state:e.dataset.n===sp?'listening':'reacting',look:'speaker',backchannel:''});applyRenderState(e.dataset.n)})},1200)}}
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
 async function end(){if(!sid)return;try{const r=await fetch('/api/session/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success){$('rc').innerHTML=`<div class="rt">${d.data.scene_name}</div><div class="md">${d.data.medal}</div><div class="sg2"><div class="sb2"><div class="sbl">情商</div><div class="sbv">${d.data.scores.emotional}</div></div><div class="sb2"><div class="sbl">反应</div><div class="sbv">${d.data.scores.reaction}</div></div><div class="sb2"><div class="sbl">总分</div><div class="sbv">${d.data.scores.total}</div></div></div><div class="rs">${d.data.summary}</div><div class="rss">${d.data.suggestion}</div><div class="rb2"><button class="btn2" onclick="show('p1')">返回菜单</button></div>`;show('p4')}}catch(e){}}
 async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
 function updateEmotionDisplay(){$('val-confidence').textContent=emotionData.confidence;$('val-calm').textContent=emotionData.calm;$('val-nervous').textContent=emotionData.nervous;$('val-focus').textContent=emotionData.focus;$('bar-confidence').style.width=emotionData.confidence+'%';$('bar-calm').style.width=emotionData.calm+'%';$('bar-nervous').style.width=emotionData.nervous+'%';$('bar-focus').style.width=emotionData.focus+'%'}
 let micAnimId=null;
-function toggleM2(){const b=$('mmb'),micId=$('micSelect').value;if(isM){if(mic)mic.getTracks().forEach(t=>t.stop());if(micAnimId)cancelAnimationFrame(micAnimId);isM=0;b.textContent='🎤 开启麦克风';b.classList.remove('on');$('volLabel').textContent='麦克风音量';for(let i=1;i<=10;i++)$('vs'+i)?.classList.remove('active');$('vi').textContent='❓';$('vt').textContent='未检测'}else{try{const constraints={audio:true};if(micId)constraints.deviceId={exact:micId};navigator.mediaDevices.getUserMedia(constraints).then(s=>{mic=s;isM=1;b.textContent='✅ 已开启';b.classList.add('on');const ctx=new(window.AudioContext||window.webkitAudioContext)(),src=ctx.createMediaStreamSource(mic),an=ctx.createAnalyser();an.fftSize=512;an.smoothingTimeConstant=0.8;src.connect(an);function m(){if(!isM)return;const data=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(data);let sum=0;for(let i=0;i<data.length;i++)sum+=data[i];const avg=sum/data.length;const vol=Math.min(100,Math.round(avg/128*100));const level=Math.ceil(vol/10);for(let i=1;i<=10;i++)$('vs'+i)?.classList.toggle('active',i<=level);$('volLabel').textContent='麦克风音量: '+vol+'%';if(vol>10){$('vi').textContent=vol>70?'🔊':vol>40?'🎵':'🎤';$('vt').textContent=vol>70?'大声':vol>40?'适中':'轻声'}else{$('vi').textContent='❓';$('vt').textContent='安静'}micAnimId=requestAnimationFrame(m)}m()}).catch(()=>alert('无法开启麦克风'))}catch(e){alert('无法开启麦克风: '+e.message)}}}
+function toggleM2(){const b=$('mmb'),micId=$('micSelect').value;if(isM){if(mic)mic.getTracks().forEach(t=>t.stop());if(micAnimId)cancelAnimationFrame(micAnimId);isM=0;b.textContent='🎤 开启麦克风';b.classList.remove('on');$('volLabel').textContent='麦克风音量';for(let i=1;i<=10;i++)$('vs'+i)?.classList.remove('active');$('vi').textContent='❓';$('vt').textContent='未检测';lastVoiceLevel=0}else{try{const constraints={audio:true};if(micId)constraints.deviceId={exact:micId};navigator.mediaDevices.getUserMedia(constraints).then(s=>{mic=s;isM=1;b.textContent='✅ 已开启';b.classList.add('on');const ctx=new(window.AudioContext||window.webkitAudioContext)(),src=ctx.createMediaStreamSource(mic),an=ctx.createAnalyser();an.fftSize=512;an.smoothingTimeConstant=0.8;src.connect(an);function m(){if(!isM)return;const data=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(data);let sum=0;for(let i=0;i<data.length;i++)sum+=data[i];const avg=sum/data.length;const vol=Math.min(100,Math.round(avg/128*100));lastVoiceLevel=vol;const level=Math.ceil(vol/10);for(let i=1;i<=10;i++)$('vs'+i)?.classList.toggle('active',i<=level);$('volLabel').textContent='麦克风音量: '+vol+'%';if(vol>10){$('vi').textContent=vol>70?'🔊':vol>40?'🎵':'🎤';$('vt').textContent=vol>70?'大声':vol>40?'适中':'轻声'}else{$('vi').textContent='❓';$('vt').textContent='安静'}micAnimId=requestAnimationFrame(m)}m()}).catch(()=>alert('无法开启麦克风'))}catch(e){alert('无法开启麦克风: '+e.message)}}}
 function updateMetrics(scores){console.log('[Metrics] 收到分数:', scores);if(scores){const total=Math.round((scores.emotional_intelligence+scores.response_quality+scores.pressure_handling+scores.cultural_fit)/4);$('val-score').textContent=total;$('bar-score').style.width=total+'%'}else{console.log('[Metrics] 分数为空')}}
 function toggleM(){toggleM2()}
 async function loadDevices(){try{const devs=await navigator.mediaDevices.enumerateDevices();const cams=devs.filter(d=>d.kind==='videoinput');const mics=devs.filter(d=>d.kind==='audioinput');$('camSelect').innerHTML='<option value="">📷 选择摄像头</option>'+cams.map((d,i)=>`<option value="${d.deviceId}">${d.label||'摄像头'+(i+1)}</option>`).join('');$('micSelect').innerHTML='<option value="">🎤 选择麦克风</option>'+mics.map((d,i)=>`<option value="${d.deviceId}">${d.label||'麦克风'+(i+1)}</option>`).join('')}catch(e){}}
