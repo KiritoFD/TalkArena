@@ -752,6 +752,43 @@ select:focus{outline:none;border-color:#667eea}
 .loading{display:flex;align-items:center;gap:15px;padding:20px}
 .spinner{width:30px;height:30px;border:3px solid #e9ecef;border-top-color:#667eea;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* Rebuilt NPC portrait panel: high contrast, state-driven expressions */
+#p3 .sp{width:280px;background:linear-gradient(180deg,#dbe7ff 0%,#f4f8ff 60%,#fff 100%);border-right:1px solid #cddcf5;padding:18px}
+#p3 .st{display:none}
+#p3 #cl{display:flex;flex-direction:column;gap:12px}
+#p3 .ci{display:flex;align-items:center;gap:14px;padding:14px;background:linear-gradient(160deg,#ffffff 0%,#f5f9ff 100%);border:1px solid #d9e5fb;border-radius:18px;box-shadow:0 6px 20px rgba(39,76,153,.12);position:relative;overflow:hidden}
+#p3 .ci::before{content:'';position:absolute;left:0;top:0;bottom:0;width:5px;background:#b8c9ea}
+#p3 .ci.state-speaking{border-color:#ffb36a;box-shadow:0 8px 26px rgba(255,139,0,.28)}
+#p3 .ci.state-speaking::before{background:#ff8b00}
+#p3 .ci.state-reacting::before{background:#5e9dff}
+#p3 .ci.state-listening::before{background:#39a96b}
+#p3 .ci .head{width:68px;height:68px;border-radius:20px;background:linear-gradient(160deg,#ecf2ff 0%,#dae8ff 100%);border:1px solid #c5d9ff;box-shadow:inset 0 -8px 14px rgba(66,104,174,.18),0 5px 12px rgba(15,23,42,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative}
+#p3 .ci .avatar-main{font-size:36px;line-height:1;filter:drop-shadow(0 2px 2px rgba(0,0,0,.2));transition:transform .2s ease,filter .2s ease}
+#p3 .ci .avatar-exp{position:absolute;right:-5px;bottom:-5px;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid #d9e6ff;box-shadow:0 3px 8px rgba(0,0,0,.15);font-size:14px}
+#p3 .ci .npc-meta{display:flex;flex-direction:column;gap:2px}
+#p3 .ci .cn{font-size:20px;font-weight:900;color:#252932;line-height:1}
+#p3 .ci .role{font-size:16px;color:#54657f;line-height:1.2}
+#p3 .ci .mood-pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:700;color:#2f3f5d;background:#e5eefc;border:1px solid #c8d9f8;width:fit-content;margin-top:4px}
+#p3 .ci .backchannel{position:absolute;top:8px;right:10px;font-size:11px;font-weight:700;color:#2759a5;background:#e6f0ff;border:1px solid #bfd4ff;border-radius:999px;padding:2px 7px;opacity:0;transform:translateY(-4px);transition:all .16s}
+#p3 .ci.has-backchannel .backchannel{opacity:1;transform:translateY(0)}
+#p3 .ci.blink .avatar-main{transform:scaleY(.84)}
+#p3 .ci.look-speaker .avatar-main{transform:translateX(1px)}
+#p3 .ci.look-user .avatar-main{transform:translateX(-1px)}
+#p3 .ci.expr-neutral .mood-pill{background:#e6ecf7;color:#43506a;border-color:#c9d4ea}
+#p3 .ci.expr-calm .avatar-exp{background:#e5f4ea;border-color:#bfe1cb}
+#p3 .ci.expr-calm .mood-pill{background:#e5f4ea;color:#226a43;border-color:#bfe1cb}
+#p3 .ci.expr-focused .avatar-main{filter:drop-shadow(0 2px 3px rgba(29,95,183,.45))}
+#p3 .ci.expr-focused .avatar-exp{background:#e5f0ff;border-color:#bfd8ff}
+#p3 .ci.expr-focused .mood-pill{background:#e5f0ff;color:#1d5fb7;border-color:#bfd8ff}
+#p3 .ci.expr-engaged .head{box-shadow:inset 0 -8px 14px rgba(151,93,25,.22),0 0 0 2px rgba(255,139,0,.25),0 8px 16px rgba(255,139,0,.25)}
+#p3 .ci.expr-engaged .avatar-main{animation:talkBob .18s infinite alternate}
+#p3 .ci.expr-engaged .avatar-exp{background:#fff2df;border-color:#ffd3a7}
+#p3 .ci.expr-engaged .mood-pill{background:#fff2df;color:#a75000;border-color:#ffd3a7}
+#p3 .ci.expr-warm .avatar-exp{background:#ffe8d9;border-color:#ffc7ad}
+#p3 .ci.expr-warm .mood-pill{background:#ffe8d9;color:#a34521;border-color:#ffc7ad}
+#p3 .ci.expr-warm .avatar-main{transform:translateY(-1px) scale(1.03)}
+@keyframes talkBob{from{transform:translateY(-1px) scale(1.02)}to{transform:translateY(1px) scale(1.07)}}
 </style>
 </head>
 <body>
@@ -813,7 +850,7 @@ select:focus{outline:none;border-color:#667eea}
 </div>
 <div class="cm">
 <div class="sp">
-<div class="st">对话角色</div>
+<div class="st"></div>
 <div id="cl"></div>
 <div class="sp-metrics">
 <div class="mt" style="color:#C8102E;font-weight:bold;">🎭 实时情感分析</div>
@@ -933,12 +970,37 @@ function refreshSceneInfoForSelection(){
     btn.textContent='新增场景时生成背景信息';
 }
 function detectEmotion(t){if(!t)return'😐';const lower=t.toLowerCase();if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
-function buildHeadCard(c){return `<div class="ci state-idle look-user" data-n="${c.n}"><div class="head"><div class="head-face"><div class="eyes"><span class="eye"></span><span class="eye"></span></div><div class="mouth"></div></div></div><div><div class="cn">${c.n}</div><div style="font-size:11px;color:#64748b">${c.r||''}</div><div class="ca" style="margin-top:2px">${c.a}</div></div><span class="backchannel">嗯</span></div>`}
+function buildHeadCard(c){return `<div class="ci state-idle look-user expr-neutral" data-n="${c.n}"><div class="head"><span class="avatar-main">${c.a||'🙂'}</span><span class="avatar-exp">😐</span></div><div class="npc-meta"><div class="cn">${c.n}</div><div class="role">${c.r||''}</div><div class="mood-pill">平静</div></div><span class="backchannel">嗯</span></div>`}
 function setRenderState(name,patch={}){if(!npcRenderState[name])npcRenderState[name]={state:'idle',look:'user',backchannel:''};Object.assign(npcRenderState[name],patch)}
-function applyRenderState(name){const card=document.querySelector(`.ci[data-n="${name}"]`);if(!card)return;const st=npcRenderState[name]||{state:'idle',look:'user',backchannel:''};card.classList.remove('state-idle','state-listening','state-reacting','state-speaking','look-user','look-speaker','has-backchannel');card.classList.add(`state-${st.state}`);card.classList.add(`look-${st.look||'user'}`);if(st.backchannel){card.classList.add('has-backchannel');const bc=card.querySelector('.backchannel');if(bc)bc.textContent=st.backchannel}}
-function blinkRandom(){document.querySelectorAll('#cl .ci').forEach(card=>{if(Math.random()<0.18){card.classList.add('blink');setTimeout(()=>card.classList.remove('blink'),120)}})}
+function _resolveExpression(st){
+    if(st.state==='speaking')return {key:'engaged',label:'发言中',emoji:'🗣️'};
+    if(st.state==='reacting')return {key:'warm',label:'有回应',emoji:'🙂'};
+    if(st.state==='listening'&&st.look==='speaker')return {key:'focused',label:'在专注',emoji:'🤔'};
+    if(st.state==='listening')return {key:'calm',label:'在聆听',emoji:'😌'};
+    return {key:'neutral',label:'平静',emoji:'😐'};
+}
+function applyRenderState(name){const card=document.querySelector(`.ci[data-n="${name}"]`);if(!card)return;const st=npcRenderState[name]||{state:'idle',look:'user',backchannel:''};card.classList.remove('state-idle','state-listening','state-reacting','state-speaking','look-user','look-speaker','has-backchannel','expr-neutral','expr-calm','expr-focused','expr-engaged','expr-warm');card.classList.add(`state-${st.state}`);card.classList.add(`look-${st.look||'user'}`);const expr=_resolveExpression(st);card.classList.add(`expr-${expr.key}`);const mood=card.querySelector('.mood-pill');if(mood)mood.textContent=expr.label;const exp=card.querySelector('.avatar-exp');if(exp)exp.textContent=expr.emoji;const bc=card.querySelector('.backchannel');if(st.backchannel){card.classList.add('has-backchannel');if(bc)bc.textContent=st.backchannel}else if(bc){bc.textContent=''}}
+function blinkRandom(){document.querySelectorAll('#cl .ci').forEach(card=>{if(card.classList.contains('state-speaking'))return;if(Math.random()<0.05){card.classList.add('blink');setTimeout(()=>card.classList.remove('blink'),120)}})}
+function renderConversationState(mode,speaker=''){
+    const names=chars.map(c=>c.n);
+    if(!names.length)return;
+    names.forEach((name,idx)=>{
+        if(mode==='npc_speaking'){
+            const isSpeaker=name===speaker;
+            setRenderState(name,{state:isSpeaker?'speaking':'listening',look:isSpeaker?'user':'speaker',backchannel:''});
+        }else if(mode==='after_npc'){
+            const isSpeaker=name===speaker;
+            setRenderState(name,{state:isSpeaker?'reacting':'listening',look:'user',backchannel:isSpeaker?'嗯':''});
+        }else if(mode==='user_speaking'){
+            setRenderState(name,{state:'listening',look:'user',backchannel:idx===0?'请讲':''});
+        }else{
+            setRenderState(name,{state:'listening',look:'user',backchannel:''});
+        }
+        applyRenderState(name);
+    });
+}
 function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));if(stress>66||confusion>70)return 'controlled_rescue';if(scene.includes('面试')||selectedScenarioId==='interview')return 'pressure_check';return 'table_banter'}
-function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;const names=chars.map(c=>c.n);if(!names.length)return;const beat=inferBeat();const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const wantsToSpeak=(lastVoiceLevel>48||$('ci2').value.trim().length>0)?1:0;const rescueMode=stress>65||confusion>70;let lead=lastSpeaker&&names.includes(lastSpeaker)?lastSpeaker:names[0];if(rescueMode){const hr=names.find(n=>/hr|人事|观察员/i.test(n));if(hr)lead=hr}names.forEach((name,i)=>{if(name===lead){setRenderState(name,{state:'speaking',look:'user',backchannel:''})}else{const reactive=beat==='table_banter'&&Math.random()>0.4;setRenderState(name,{state:reactive?'reacting':'listening',look:'speaker',backchannel:(reactive&&Math.random()>0.7)?'对对':''})}applyRenderState(name)});if(wantsToSpeak){const others=names.filter(n=>n!==lead);if(others.length){const n=others[Math.floor(Math.random()*others.length)];setRenderState(n,{state:'reacting',look:'user',backchannel:'我补一句'});applyRenderState(n)}}blinkRandom()},320)}
+function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;blinkRandom()},1400)}
 function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
 function goCfg(){show('p2')}
 function selScene(el){document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));el.classList.add('on');scene=el.dataset.s;const p=pool[scene];selectedScenarioId=p?p.id:'shandong_dinner';genMems()}
@@ -1295,7 +1357,7 @@ async function start(){
 chars=mems;
 show('p3');
 $('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
-chars.forEach(c=>{setRenderState(c.n,{state:'listening',look:'user',backchannel:''});applyRenderState(c.n)});
+renderConversationState('idle');
 runNonverbalLoop();
 updScr(50,50);
 try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),user_info:(window.userInfo||null)})});
@@ -1303,14 +1365,14 @@ const d=await r.json();if(!d.success){alert(d.error);return}
 sid=d.data.session_id;if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))}catch(e){alert(e)}
 }
 async function send(){
-const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';const firstName=chars[0]?.n;if(firstName){setRenderState(firstName,{state:'listening',look:'user',backchannel:'请讲'});applyRenderState(firstName)}addUser(t);
+const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';renderConversationState('user_speaking');addUser(t);
 const multimodal={emotion:emotionData,voice_level:isM?($('volLabel').textContent.replace('麦克风音量: ','').replace('%','')||0):0};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));if(d.data.judgment){$('cb').style.display='flex';let judge=d.data.judgment;if(d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}$('ct2').textContent=judge}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
 }
 function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
-function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;if(sp){lastSpeaker=sp;document.querySelectorAll('.ci').forEach(e=>{const isSpeaker=e.dataset.n===sp;e.classList.toggle('talk',isSpeaker);setRenderState(e.dataset.n,{state:isSpeaker?'speaking':'reacting',look:isSpeaker?'user':'speaker',backchannel:(!isSpeaker&&Math.random()>0.65)?'嗯':''});applyRenderState(e.dataset.n);if(isSpeaker){const ca=e.querySelector('.ca');ca.style.transform='scale(1.2)';setTimeout(()=>ca.style.transform='scale(1)',300)}});setTimeout(()=>{document.querySelectorAll('.ci').forEach(e=>{setRenderState(e.dataset.n,{state:e.dataset.n===sp?'listening':'reacting',look:'speaker',backchannel:''});applyRenderState(e.dataset.n)})},1200)}}
+function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;const speaker=sp||chars[0]?.n||'';if(speaker){lastSpeaker=speaker;renderConversationState('npc_speaking',speaker);const card=document.querySelector(`.ci[data-n="${speaker}"] .ca`);if(card){card.style.transform='scale(1.12)';setTimeout(()=>card.style.transform='scale(1)',220)}setTimeout(()=>renderConversationState('after_npc',speaker),700)}else{renderConversationState('idle')}}
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
 async function end(){if(!sid)return;try{const r=await fetch('/api/session/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success){$('rc').innerHTML=`<div class="rt">${d.data.scene_name}</div><div class="md">${d.data.medal}</div><div class="sg2"><div class="sb2"><div class="sbl">情商</div><div class="sbv">${d.data.scores.emotional}</div></div><div class="sb2"><div class="sbl">反应</div><div class="sbv">${d.data.scores.reaction}</div></div><div class="sb2"><div class="sbl">总分</div><div class="sbv">${d.data.scores.total}</div></div></div><div class="rs">${d.data.summary}</div><div class="rss">${d.data.suggestion}</div><div class="rb2"><button class="btn2" onclick="show('p1')">返回菜单</button></div>`;show('p4')}}catch(e){}}
