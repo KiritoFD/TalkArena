@@ -1,13 +1,12 @@
-"""
-Multi-Agent 协同决策系统
-"""
+﻿from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Dict, List
 import json
-import re
 import logging
+import random
+import re
 
 logger = logging.getLogger("MultiAgent")
 
@@ -49,552 +48,295 @@ class BaseAgent:
 
 
 class EmpatheticDialogueAgent(BaseAgent):
-    """升级版对话Agent - 情感驱动"""
+    """Compatibility wrapper; delegates to DialogueAgent."""
 
     def __init__(self, llm=None):
         super().__init__(AgentRole.DIALOGUE, llm)
+        self._delegate = DialogueAgent(llm)
 
     def think(self, context: Dict) -> AgentMessage:
-        characters = context.get("characters", [])
-        user_input = context.get("user_input", "")
-        turn_count = context.get("turn_count", 0)
-        dominance = context.get("dominance", {"user": 50, "ai": 50})
-        multimodal = context.get("multimodal", {})
-        scenario_id = context.get("scenario_id", "shandong_dinner")
-
-        if not characters:
-            return AgentMessage(self.role, "系统：未配置角色", confidence=0.5)
-
-        speaker_idx = turn_count % len(characters)
-        speaker = characters[speaker_idx]
-        speaker_name = speaker.get("name", "角色")
-
-        emotion_state = multimodal.get("emotion_state", {})
-        coordination = multimodal.get("coordination", {})
-
-        prompt = self._build_empathy_prompt(
-            speaker_name=speaker_name,
-            user_input=user_input,
-            emotion_state=emotion_state,
-            coordination=coordination,
-            turn_count=turn_count,
-            dominance=dominance,
-            scenario_id=scenario_id,
-            characters=characters,
-        )
-
-        if self.llm:
-            try:
-                logger.info(
-                    f"[EmpatheticDialogueAgent] 场景={scenario_id}, 角色={speaker_name}"
-                )
-                response = self.llm.generate(prompt, max_new_tokens=200)
-                content = response.strip()
-                content = re.sub(r"^[^：:]+[：:]\s*", "", content)
-
-                behavior_cues = coordination.get("behavior_instructions", {}).get(
-                    speaker_name, {}
-                )
-
-                return AgentMessage(
-                    self.role,
-                    content,
-                    {
-                        "speaker": speaker_name,
-                        "scenario": scenario_id,
-                        "behavior_cues": behavior_cues,
-                        "emotion_understanding": emotion_state.get(
-                            "primaryEmotion", "neutral"
-                        ),
-                    },
-                    confidence=0.9,
-                )
-            except Exception as e:
-                logger.error(f"[EmpatheticDialogueAgent] 生成失败: {e}")
-                return AgentMessage(
-                    self.role,
-                    self._get_fallback_response(scenario_id, speaker_name),
-                    {"speaker": speaker_name},
-                    confidence=0.6,
-                )
-
-        return AgentMessage(
-            self.role,
-            self._get_fallback_response(scenario_id, speaker_name),
-            {"speaker": speaker_name},
-            confidence=0.5,
-        )
-
-    def _build_empathy_prompt(
-        self,
-        speaker_name: str,
-        user_input: str,
-        emotion_state: Dict,
-        coordination: Dict,
-        turn_count: int,
-        dominance: Dict,
-        scenario_id: str,
-        characters: List[Dict],
-    ) -> str:
-        """构建情感感知的Prompt"""
-
-        primary_emotion = emotion_state.get("primaryEmotion", "neutral")
-        intensity = emotion_state.get("emotionIntensity", 0.5)
-        hidden = emotion_state.get("hiddenSentiment")
-        inconsistencies = emotion_state.get("inconsistencies", [])
-
-        user_sentiment = coordination.get("user_sentiment", {})
-        tactic = user_sentiment.get("strategy", "normal")
-
-        behavior_instructions = coordination.get("behavior_instructions", {})
-        speaker_behavior = behavior_instructions.get(speaker_name, {})
-
-        word_limit = {"shandong_dinner": 60, "interview": 80, "debate": 100}.get(
-            scenario_id, 60
-        )
-
-        emotion_guidance = ""
-        if primary_emotion == "nervous":
-            emotion_guidance = (
-                "用户看起来有点紧张，TA可能感到不安。你可以适当放松语气，或给个台阶。"
-            )
-        elif primary_emotion == "confident":
-            emotion_guidance = (
-                "用户看起来很自信，回答有条理。你需要更加谨慎应对，不能掉以轻心。"
-            )
-        elif primary_emotion == "angry":
-            emotion_guidance = (
-                "用户情绪不太好，可能是你之前说得太过分了。适当收敛，给个台阶。"
-            )
-        elif primary_emotion == "happy":
-            emotion_guidance = "用户情绪不错，可以继续保持这种友好的互动氛围。"
-        else:
-            emotion_guidance = "用户情绪平稳，正常应对即可。"
-
-        if hidden:
-            emotion_guidance += f"\n注意：用户的真实感受可能是：{hidden}"
-
-        if inconsistencies:
-            emotion_guidance += (
-                f"\n检测到用户表达不一致：{inconsistencies[0].get('description', '')}"
-            )
-
-        behavior_guidance = ""
-        if speaker_behavior:
-            facial = speaker_behavior.get("facial", "自然")
-            tone = speaker_behavior.get("tone", "自然")
-            thought = speaker_behavior.get("thought", "")
-            if thought:
-                behavior_guidance = f"（内心活动：{thought}）"
-
-        prompt = f"""<场景类型>{scenario_id}</场景类型>
-<角色设定>
-- 姓名: {speaker_name}
-- 请严格保持{speaker_name}的说话风格和性格特点
-</角色设定>
-
-<当前局势>
-- 用户气场: {dominance["user"]}分 / 你的气场: {dominance["ai"]}分
-- 回合: 第{turn_count + 1}轮
-</局势>
-
-<用户情感分析>
-{emotion_guidance}
-</用户情感分析>
-
-<行为指导>
-{behavior_guidance}
-</行为指导>
-
-<战术策略>
-当前战术: {tactic}
-</战术策略>
-
-<用户刚才说>
-"{user_input}"
-</用户刚才说>
-
-【输出要求】
-1. 严格保持{speaker_name}的说话风格
-2. 根据用户的真实情感状态来调整你的回应
-3. 深度结合情感分析结果，让回复有差异化
-4. 适当添加表情动作描述（用括号）
-5. {word_limit}字以内
-6. 只输出对话内容，不要输出角色名或任何格式
-
-请以{speaker_name}的身份回复："""
-
-        return prompt
-
-    def _get_fallback_response(self, scenario_id: str, speaker_name: str) -> str:
-        fallbacks = {
-            "shandong_dinner": "来来来，咱继续喝！",
-            "interview": "好的，那我们来聊聊下一个问题。",
-            "debate": "对于这个问题，你有什么看法？",
-        }
-        return fallbacks.get(scenario_id, "继续")
+        return self._delegate.think(context)
 
 
 class DialogueAgent(BaseAgent):
-    SCENARIO_CHARACTERS = {
+    SCENES = {
         "shandong_dinner": {
-            "大舅": {
-                "personality": "鲁中地区德高望重的长辈，担任饭局主陪。热情但极讲规矩，擅长情感绑架和逻辑劝酒。",
-                "style": "使用鲁中口音（昂、木有、杠好、养鱼），言简意赅，常常用典故教训人。",
-                "strategy": "先礼后兵，先关心后施压，擅长用'为你好'进行情感绑架。",
+            "name": "山东家庭饭桌",
+            "atmosphere": "热闹、熟人压力强、讲面子和分寸，话里常带人情账。",
+            "rhetoric": "多用对偶和重复，短句推进，口气接地气。",
+            "word_limit": 56,
+            "characters": {
+                "大舅": {
+                    "personality": "长辈主桌，重礼数，先关心后施压。",
+                    "style": "一句抬人，一句压人；有亲近感但不失权威。",
+                },
+                "大姑": {
+                    "personality": "会圆场，擅观察，擅软性引导。",
+                    "style": "语气柔和，先顺着说，再轻推一步。",
+                },
+                "表哥": {
+                    "personality": "活跃气氛，推进节奏。",
+                    "style": "直接利落，可打趣但不刻薄。",
+                },
             },
-            "大妗子": {
-                "personality": "饭局旁观者，表面劝你别喝，实则数你喝了几杯。热心肠但爱看热闹。",
-                "style": "温和但暗藏套路，笑里藏刀。",
-                "strategy": "假意关心，实则拱火，擅长在旁边煽风点火。",
+            "openings": {
+                "大舅": "来，先坐稳先吃菜，酒慢慢来，话一条一条说。",
+                "大姑": "先别紧张，先吃口热菜，咱慢慢聊、细细聊。",
+                "表哥": "不急着拼酒，先碰个轻的，边吃边把事说透。",
             },
-            "表哥": {
-                "personality": "饭局副陪，负责活跃气氛和起哄。最擅长说'我陪一个'，酒桌气氛组组长。",
-                "style": "豪爽直接，爱开玩笑，有时候有点过了。",
-                "strategy": "不停劝酒，活跃气氛，但也会适时给台阶。",
+            "fallback": "行，咱慢慢聊，你先说你最在意的一点。",
+        },
+        "business_dinner": {
+            "name": "商务饭局谈判",
+            "atmosphere": "表面轻松，底层在试探资源、边界和执行力。",
+            "rhetoric": "先礼后实，先关系后条款；并列句强调可执行性。",
+            "word_limit": 68,
+            "characters": {
+                "王总": {
+                    "personality": "结果导向，重时效和确定性。",
+                    "style": "先定目标、再压节点、最后问风险兜底。",
+                },
+                "李总": {
+                    "personality": "善沟通，掌控节奏。",
+                    "style": "客气但锋利，追问时间点和责任人。",
+                },
+                "周顾问": {
+                    "personality": "偏风控，重合规和边界。",
+                    "style": "先列约束，再给可落地路径。",
+                },
             },
-            "二叔": {
-                "personality": "话唠长辈，喜欢翻旧账，回忆当年光辉事迹。",
-                "style": "啰嗦但不乏味，爱讲道理。",
-                "strategy": "讲道理，翻旧账，让你无法反驳。",
+            "openings": {
+                "王总": "先把目标对齐、再把节奏对齐，今晚我们只谈落地。",
+                "李总": "咱们先把共识摆在桌上，再把分工写在纸上。",
+                "周顾问": "先说红线，再说方案；边界清楚，合作才稳。",
             },
-            "王局长": {
-                "personality": "单位领导，深谙官场礼仪，讲究排场。",
-                "style": "官腔十足，不怒自威。",
-                "strategy": "先试探，再施压，最后给甜头。",
-            },
-            "小赵": {
-                "personality": "实诚晚辈，性格耿直，不会来事。",
-                "style": "直接爽快，有啥说啥。",
-                "strategy": "被动接话，有时候说错话。",
-            },
-            "老张": {
-                "personality": "酒桌老炮，三句不离酒，经验丰富。",
-                "style": "老练世故，推杯换盏高手。",
-                "strategy": "用酒文化绑架，不喝不行。",
-            },
-            "王总": {
-                "personality": "商务场合老板，深谙商务礼仪，讲究利益交换。",
-                "style": "客套但精明，利益至上。",
-                "strategy": "先谈感情再谈事，商务谈判高手。",
-            },
-            "李总": {
-                "personality": "副陪，能言善辩，善于活跃气氛。",
-                "style": "幽默风趣，会来事。",
-                "strategy": "配合主陪，一唱一和。",
-            },
-            "老同学": {
-                "personality": "攀比狂魔，总爱炫耀自己现在的成就。",
-                "style": "阴阳怪气，暗中攀比。",
-                "strategy": "各种炫耀，让你尴尬。",
-            },
-            "班长": {
-                "personality": "组局者，最爱回忆当年同学情。",
-                "style": "热情组织，但有点自我感动。",
-                "strategy": "回忆杀，让你不好意思拒绝。",
-            },
+            "fallback": "这个方向可以，先把时间表和责任边界说清楚。",
         },
         "interview": {
-            "面试官": {
-                "personality": "技术经理，资深技术专家。面试经验丰富，喜欢深挖技术细节。",
-                "style": "专业严谨，追问深入，有时候会故意施压测试抗压能力。",
-                "strategy": "先问基础，再挖深度，最后看应变能力。",
+            "name": "高压结构化面试",
+            "atmosphere": "节奏快、追问深，重证据链和复盘能力。",
+            "rhetoric": "结论前置，三段并列，少形容多事实。",
+            "word_limit": 78,
+            "characters": {
+                "主面试官": {
+                    "personality": "判断严格，关注抗压和清晰度。",
+                    "style": "追问关键细节，不接受空泛答案。",
+                },
+                "HR": {
+                    "personality": "看匹配度与稳定沟通。",
+                    "style": "温和提问，但直击价值观与协作方式。",
+                },
+                "技术负责人": {
+                    "personality": "看技术深度与工程落地。",
+                    "style": "要场景、要指标、要取舍。",
+                },
             },
-            "HR": {
-                "personality": "HR负责人，经验丰富，善于观察细节。看重价值观和团队匹配度。",
-                "style": "温和但犀利，一针见血。",
-                "strategy": "聊家常，看本质，评估价值观。",
+            "openings": {
+                "主面试官": "我们直接进入正题：先给结论，再给证据，再给复盘。",
+                "HR": "先放轻松，我们看三点：匹配度、稳定性、协作感。",
+                "技术负责人": "请用一个真实项目展开，重点讲权衡与结果。",
             },
-            "部门主管": {
-                "personality": "用人部门负责人，注重实际工作能力。",
-                "style": "直接务实，关注落地能力。",
-                "strategy": "问项目经验，看实际产出。",
-            },
-            "主考官": {
-                "personality": "群面主考官，统筹全场，观察候选人表现。",
-                "style": "公正严厉，不偏不向。",
-                "strategy": "给题目，观察每个人的表现和互动。",
-            },
-            "候选人A": {
-                "personality": "群面中的积极分子，表现欲望强。",
-                "style": "积极发言，但有时候过于激进。",
-                "strategy": "抢话，表现自己。",
-            },
-            "候选人B": {
-                "personality": "逻辑清晰，论证严密。",
-                "style": "沉稳有序，不急于发言。",
-                "strategy": "找准时机，一击即中。",
-            },
+            "fallback": "请你用 STAR 结构，给一个可量化结果的例子。",
         },
         "debate": {
-            "主持人": {
-                "personality": "辩论赛裁判，公正严谨，把握节奏。",
-                "style": "清晰有节奏，不偏不向。",
-                "strategy": "控制时间，引导讨论，给双方机会。",
+            "name": "立场攻防辩论",
+            "atmosphere": "观点对撞，强调定义、证据、反驳链完整。",
+            "rhetoric": "先定义后论证，反问与排比结合，但不跑题。",
+            "word_limit": 88,
+            "characters": {
+                "正方辩手": {
+                    "personality": "立场鲜明，强调收益与可行性。",
+                    "style": "先立论、后证据、再反击。",
+                },
+                "反方辩手": {
+                    "personality": "擅拆前提和逻辑漏洞。",
+                    "style": "抓定义、举反例、迫使收敛命题。",
+                },
+                "点评席": {
+                    "personality": "中立，重逻辑一致性。",
+                    "style": "指出跳步、偷换概念、证据断点。",
+                },
             },
-            "正方辩手": {
-                "personality": "支持方辩手，观点鲜明，论证有力。",
-                "style": "有理有据，逻辑严密。",
-                "strategy": "立论扎实，防守反击。",
+            "openings": {
+                "正方辩手": "我先明确命题边界，再给证据链，最后回应反驳点。",
+                "反方辩手": "先别急着下结论，先看前提是否成立、证据是否闭环。",
+                "点评席": "本轮只看三件事：定义是否清楚、证据是否有效、推理是否连贯。",
             },
-            "反方辩手": {
-                "personality": "反对方辩手，思维敏捷，善于找漏洞。",
-                "style": "犀利直接，攻击性强。",
-                "strategy": "找对方漏洞猛烈攻击。",
-            },
-            "观众": {
-                "personality": "普通观众代表，代表大众观点。",
-                "style": "直接提问，不玩虚的。",
-                "strategy": "问实际影响，不满空洞理论。",
-            },
-        },
-    }
-
-    EMOTION_STRATEGIES = {
-        "shandong_dinner": {
-            "nervous_high": "给台阶，缓和气氛，不要逼太紧，体现关心",
-            "nervous_low": "可以适当施压，增加挑战",
-            "confident_high": "增加难度，提升气场压制",
-            "confident_low": "给鼓励，适时给台阶",
-            "calm_high": "深入讲道理，循循善诱",
-            "calm_low": "活跃气氛，用情感绑架",
-            "focus_high": "认真对待，可以深入话题",
-            "focus_low": "提醒走神，制造尴尬",
-        },
-        "interview": {
-            "nervous_high": "适当缓和，给信心，不要太难为人",
-            "nervous_low": "可以加大压力，测试抗压能力",
-            "confident_high": "增加难度，深挖细节",
-            "confident_low": "给简单问题建立信心",
-            "calm_high": "深入追问，看真实水平",
-            "calm_low": "活跃气氛，减少紧张",
-            "focus_high": "问深层次问题，看思考深度",
-            "focus_low": "提醒集中注意力",
-        },
-        "debate": {
-            "nervous_high": "攻击薄弱环节，扩大优势",
-            "nervous_low": "小心应对，可能有后招",
-            "confident_high": "正面交锋，不退缩",
-            "confident_low": "抓住机会反击",
-            "calm_high": "稳扎稳打，论证充分",
-            "calm_low": "制造混乱，抢节奏",
-            "focus_high": "认真应对，找逻辑漏洞",
-            "focus_low": "指出对方不专注",
+            "fallback": "你的结论有方向，但证据链还不够闭环。",
         },
     }
 
     def __init__(self, llm=None):
         super().__init__(AgentRole.DIALOGUE, llm)
 
-    def _get_scenario_prompt(
-        self,
-        scenario_id: str,
-        speaker_name: str,
-        role_info: Dict,
-        emotion: Dict,
-        voice_level: int,
-        turn_count: int,
-        dominance: Dict,
-        scene_description: str = "",
-        user_info: Dict = None,
-    ) -> str:
-        personality = role_info.get("personality", "")
-        style = role_info.get("style", "")
-        strategy = role_info.get("strategy", "")
+    def _resolve_scene(self, scenario_id: str) -> Dict:
+        return self.SCENES.get(scenario_id, self.SCENES["shandong_dinner"])
 
-        confidence = emotion.get("confidence", 50)
-        calm = emotion.get("calm", 50)
-        nervous = emotion.get("nervous", 20)
-        focus = emotion.get("focus", 50)
+    def _resolve_speaker(self, context: Dict) -> str:
+        chars = context.get("characters") or []
+        turn_count = int(context.get("turn_count", 0))
+        if not chars:
+            return "NPC"
+        speaker = chars[turn_count % len(chars)]
+        return speaker.get("name") or speaker.get("n") or "NPC"
 
-        scenario_strategies = self.EMOTION_STRATEGIES.get(
-            scenario_id, self.EMOTION_STRATEGIES["shandong_dinner"]
-        )
+    def _emotion_hint(self, multimodal: Dict) -> str:
+        emo = multimodal.get("emotion", {}) if isinstance(multimodal, dict) else {}
+        nervous = int(emo.get("nervous", 20))
+        confidence = int(emo.get("confidence", 50))
+        focus = int(emo.get("focus", 50))
+        calm = int(emo.get("calm", 50))
 
-        strategy_tips = []
-        if nervous > 60:
-            strategy_tips.append(scenario_strategies["nervous_high"])
-        elif nervous < 30:
-            strategy_tips.append(scenario_strategies["nervous_low"])
+        hints = []
+        if nervous >= 70:
+            hints.append("用户紧张，先稳情绪，再推进核心问题")
+        if confidence <= 30:
+            hints.append("用户底气弱，给台阶并给可执行下一步")
+        if focus <= 35:
+            hints.append("用户分心，收束到一个关键点")
+        if confidence >= 75 and focus >= 70:
+            hints.append("用户状态好，可提升问题深度")
+        if calm >= 70 and nervous <= 30:
+            hints.append("氛围平稳，可进入细节追问")
+        return "；".join(hints) if hints else "按当前节奏自然推进"
 
-        if confidence > 70:
-            strategy_tips.append(scenario_strategies["confident_high"])
-        elif confidence < 30:
-            strategy_tips.append(scenario_strategies["confident_low"])
+    def _opening_line(self, scene: Dict, speaker_name: str) -> str:
+        openings = scene.get("openings", {})
+        return openings.get(speaker_name) or next(iter(openings.values()), scene.get("fallback", "我们开始吧。"))
 
-        if calm > 70:
-            strategy_tips.append(scenario_strategies["calm_high"])
-        elif calm < 30:
-            strategy_tips.append(scenario_strategies["calm_low"])
+    def _build_prompt(self, context: Dict, speaker_name: str, scene: Dict) -> str:
+        user_input = context.get("user_input", "")
+        scene_desc = context.get("scene_description", "")
+        user_info = context.get("user_info") or {}
+        char_info = scene.get("characters", {}).get(speaker_name, {})
+        multimodal = context.get("multimodal", {})
 
-        if focus > 70:
-            strategy_tips.append(scenario_strategies["focus_high"])
-        elif focus < 30:
-            strategy_tips.append(scenario_strategies["focus_low"])
+        word_limit = int(scene.get("word_limit", 60))
+        personality = char_info.get("personality", f"你是{speaker_name}")
+        style = char_info.get("style", "自然对话")
 
-        strategy_text = (
-            "；".join(strategy_tips) if strategy_tips else "根据实际情况灵活应对"
-        )
-
-        word_limit = {"shandong_dinner": 50, "interview": 80, "debate": 100}.get(
-            scenario_id, 50
-        )
-
-        # 添加场景描述和用户信息
-        scene_info = ""
-        if scene_description:
-            scene_info = f"<场景背景>\n{scene_description}\n</场景背景>\n\n"
-
-        user_info_str = ""
+        user_identity = ""
         if user_info:
-            user_name = user_info.get("n", "你")
-            user_role = user_info.get("r", "参与者")
-            user_background = user_info.get("b", "")
-            user_info_str = f"<用户身份>\n- 姓名: {user_name}\n- 角色: {user_role}\n- 背景: {user_background}\n</用户身份>\n\n"
+            user_identity = (
+                f"用户身份: {user_info.get('n', '用户')} / {user_info.get('r', '参与者')} / {user_info.get('b', '')}"
+            )
 
-        prompt = f"""<场景类型>{scenario_id}</场景类型>
-{scene_info}{user_info_str}<角色设定>
-- 姓名: {speaker_name}
-- 性格: {personality}
-- 说话风格: {style}
-- 常用策略: {strategy}
-</角色设定>
+        return (
+            f"你在场景《{scene.get('name', '对话')}》扮演“{speaker_name}”。\n"
+            f"场景氛围: {scene.get('atmosphere', '')}\n"
+            f"修辞要求: {scene.get('rhetoric', '')}\n"
+            f"角色设定: {personality}\n"
+            f"说话风格: {style}\n"
+            f"补充背景: {scene_desc}\n"
+            f"{user_identity}\n"
+            f"多模态提示: {self._emotion_hint(multimodal)}\n"
+            f"用户刚说: {user_input}\n\n"
+            "输出规则:\n"
+            "1) 只输出NPC的一句话。\n"
+            "2) 不要复述用户原话，不要出现引号包裹的用户台词。\n"
+            "3) 不要输出角色名、旁白、系统提示。\n"
+            "4) 句子要贴场景、可执行、有情绪分寸。\n"
+            f"5) 长度不超过{word_limit}字。"
+        )
 
-<当前状态>
-- 回合: 第{turn_count + 1}轮
-- 用户气场: {dominance["user"]}分 / 你的气场: {dominance["ai"]}分
-</当前状态>
+    def _sanitize_model_reply(self, raw_text: str, user_input: str, speaker_name: str, max_chars: int) -> str:
+        text = (raw_text or "").strip()
+        if not text:
+            return ""
 
-<用户实时情感分析>
-- 自信度: {confidence}% (高=有底气/低=底气不足)
-- 平静度: {calm}% (高=从容不迫/低=内心慌乱)
-- 紧张度: {nervous}% (高=紧张害怕/低=放松自在)
-- 专注度: {focus}% (高=认真思考/低=心不在焉)
-- 语音音量: {voice_level}%
-</用户实时情感分析>
+        text = re.sub(rf"^\s*{re.escape(speaker_name)}\s*[：:]\s*", "", text)
+        text = re.sub(r"^\s*(NPC|AI|assistant|角色)\s*[：:]\s*", "", text, flags=re.I)
+        text = text.strip(" \t\r\n\"'“”‘’")
 
-<情感影响策略>
-{strategy_text}
-</情感影响策略>
+        lines = [ln.strip() for ln in re.split(r"[\r\n]+", text) if ln.strip()]
+        if lines:
+            text = lines[0]
 
-<用户输入>"{self._get_user_input_placeholder(scenario_id)}"</用户输入>
+        user_norm = re.sub(r"\s+", "", user_input or "")
+        if user_norm:
+            text = re.sub(
+                r"[“\"']([^”\"']+)[”\"']",
+                lambda m: "" if re.sub(r"\s+", "", m.group(1)) == user_norm else m.group(0),
+                text,
+            )
+            if re.sub(r"\s+", "", text) == user_norm:
+                text = ""
 
-<输出要求>
-1. 严格保持角色{speaker_name}的说话风格
-2. 根据用户的实时情感状态灵活调整回应策略
-3. 深度结合情感分析结果，让回复有差异化
-4. 字数: {word_limit}字以内
-5. 只输出对话内容，不要输出角色名或任何格式
-</输出要求>"""
+        for sep in ("。", "！", "？", "!", "?"):
+            if sep in text:
+                text = text.split(sep, 1)[0].strip() + sep
+                break
 
-        return prompt
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip("，,;；:： ") + "。"
 
-    def _get_user_input_placeholder(self, scenario_id: str) -> str:
-        placeholders = {
-            "shandong_dinner": "根据用户说的内容，用酒桌文化回应",
-            "interview": "根据用户回答，进行下一步提问或评价",
-            "debate": "根据对方辩手的发言，进行反驳或总结",
-        }
-        return placeholders.get(scenario_id, "根据场景回应")
+        bad_markers = (
+            "如用户说",
+            "如果用户没有问题",
+            "答案应为",
+            "输出规则",
+            "你在场景",
+            "角色设定",
+            "用户刚说",
+            "请只输出",
+        )
+        if any(m in text for m in bad_markers):
+            return ""
+
+        return text.strip()
 
     def think(self, context: Dict) -> AgentMessage:
-        characters = context.get("characters", [])
-        user_input = context.get("user_input", "")
-        turn_count = context.get("turn_count", 0)
-        dominance = context.get("dominance", {"user": 50, "ai": 50})
-        multimodal = context.get("multimodal", {})
-        scenario_id = context.get("scenario_id", "shandong_dinner")
-        scene_description = context.get("scene_description", "")
-        user_info = context.get("user_info")
+        scene = self._resolve_scene(context.get("scenario_id", "shandong_dinner"))
+        speaker_name = self._resolve_speaker(context)
+        user_input = (context.get("user_input", "") or "").strip()
 
-        if not characters:
-            return AgentMessage(self.role, "系统：未配置角色", confidence=0.5)
+        if not context.get("characters"):
+            return AgentMessage(self.role, scene["fallback"], {"speaker": speaker_name}, 0.6)
 
-        speaker_idx = turn_count % len(characters)
-        speaker = characters[speaker_idx]
-        speaker_name = speaker.get("name", speaker.get("n", "角色"))
-
-        emotion = multimodal.get("emotion", {})
-        voice_level = multimodal.get("voice_level", 0)
-
-        confidence = emotion.get("confidence", 50)
-        nervous = emotion.get("nervous", 20)
-        calm = emotion.get("calm", 50)
-        focus = emotion.get("focus", 50)
-
-        char_pool = self.SCENARIO_CHARACTERS.get(
-            scenario_id, self.SCENARIO_CHARACTERS["shandong_dinner"]
-        )
-        role_info = char_pool.get(
-            speaker_name,
-            {
-                "personality": f"你是{speaker_name}",
-                "style": "正常说话",
-                "strategy": "根据实际情况回应",
-            },
-        )
-
-        system_prompt = self._get_scenario_prompt(
-            scenario_id,
-            speaker_name,
-            role_info,
-            emotion,
-            voice_level,
-            turn_count,
-            dominance,
-            scene_description,
-            user_info,
-        )
-
-        system_prompt = system_prompt.replace(
-            self._get_user_input_placeholder(scenario_id), f"'{user_input}'"
-        )
+        # Opening line per scene/speaker when session starts.
+        if not user_input:
+            return AgentMessage(
+                self.role,
+                self._opening_line(scene, speaker_name),
+                {"speaker": speaker_name, "scenario": context.get("scenario_id", "shandong_dinner")},
+                confidence=0.92,
+            )
 
         if self.llm:
             try:
-                logger.info(
-                    f"[DialogueAgent] 场景={scenario_id}, 角色={speaker_name}, 自信={confidence}%, 紧张={nervous}%, 平静={calm}%, 专注={focus}%"
+                prompt = self._build_prompt(context, speaker_name, scene)
+                response = self.llm.generate(prompt, max_new_tokens=120, temperature=0.7)
+                content = self._sanitize_model_reply(
+                    response,
+                    user_input=user_input,
+                    speaker_name=speaker_name,
+                    max_chars=int(scene.get("word_limit", 60)),
                 )
-                response = self.llm.generate(system_prompt, max_new_tokens=150)
-                content = response.strip()
-                content = re.sub(r"^[^：:]+[：:]\s*", "", content)
+                if not content:
+                    content = scene["fallback"]
                 return AgentMessage(
                     self.role,
                     content,
-                    {"speaker": speaker_name, "scenario": scenario_id},
+                    {"speaker": speaker_name, "scenario": context.get("scenario_id", "shandong_dinner")},
                     confidence=0.9,
                 )
             except Exception as e:
-                logger.error(f"[DialogueAgent] 生成失败: {e}")
-                return AgentMessage(
-                    self.role,
-                    self._get_fallback_response(scenario_id, speaker_name),
-                    {"speaker": speaker_name, "scenario": scenario_id},
-                    confidence=0.6,
-                )
+                logger.error("[DialogueAgent] generation failed: %s", e)
 
         return AgentMessage(
             self.role,
-            self._get_fallback_response(scenario_id, speaker_name),
-            {"speaker": speaker_name},
-            confidence=0.5,
+            scene["fallback"],
+            {"speaker": speaker_name, "scenario": context.get("scenario_id", "shandong_dinner")},
+            confidence=0.6,
         )
-
-    def _get_fallback_response(self, scenario_id: str, speaker_name: str) -> str:
-        fallbacks = {
-            "shandong_dinner": "来来来，咱继续喝！",
-            "interview": "好的，那我们来聊聊下一个问题。",
-            "debate": "对于这个问题，你有什么看法？",
-        }
-        return fallbacks.get(scenario_id, "继续")
 
 
 class EvaluatorAgent(BaseAgent):
     EVAL_CRITERIA = {
-        "emotional_intelligence": {"weight": 0.35},
-        "response_quality": {"weight": 0.30},
-        "pressure_handling": {"weight": 0.20},
-        "cultural_fit": {"weight": 0.15},
+        "emotional_intelligence": 0.35,
+        "response_quality": 0.30,
+        "pressure_handling": 0.20,
+        "cultural_fit": 0.15,
     }
 
     def __init__(self, llm=None):
@@ -602,14 +344,26 @@ class EvaluatorAgent(BaseAgent):
 
     def think(self, context: Dict) -> AgentMessage:
         user_input = context.get("user_input", "")
-        prev_dominance = context.get("dominance", {"user": 50, "ai": 50})
+        prev = context.get("dominance", {"user": 50, "ai": 50})
         multimodal = context.get("multimodal", {})
 
         scores = self._evaluate(user_input, multimodal)
-        delta = self._calculate_delta(scores)
-        new_user = max(10, min(90, prev_dominance["user"] + delta))
+        total = sum(scores[k] * w for k, w in self.EVAL_CRITERIA.items())
+        if total >= 72:
+            delta = 8
+            judgment = "这一轮回应很稳，信息密度和分寸都在线。"
+        elif total >= 58:
+            delta = 3
+            judgment = "这轮表现合格，继续提高证据和表达力度。"
+        elif total >= 42:
+            delta = -2
+            judgment = "这轮有点被动，建议更直接地给结论。"
+        else:
+            delta = -8
+            judgment = "这轮失分明显，需要快速重建结构化表达。"
+
+        new_user = max(10, min(90, int(prev.get("user", 50)) + delta))
         new_ai = 100 - new_user
-        judgment = self._generate_judgment(scores, delta)
 
         return AgentMessage(
             self.role,
@@ -622,83 +376,55 @@ class EvaluatorAgent(BaseAgent):
             confidence=0.85,
         )
 
-    def _evaluate(self, user_input: str, multimodal: Dict) -> Dict:
-        text = user_input.lower()
-        scores = {}
+    def _evaluate(self, user_input: str, multimodal: Dict) -> Dict[str, int]:
+        text = (user_input or "").lower()
+        emo = multimodal.get("emotion", {}) if isinstance(multimodal, dict) else {}
 
-        eq_score = 50
-        if any(w in text for w in ["您", "请", "感谢", "谢谢"]):
-            eq_score += 15
-        if any(w in text for w in ["理解", "明白", "知道"]):
-            eq_score += 10
-        if len(text) < 5:
-            eq_score -= 10
-        if any(w in text for w in ["不行", "不要", "滚"]):
-            eq_score -= 20
-        scores["emotional_intelligence"] = min(100, max(0, eq_score))
+        eq = 55
+        if any(w in text for w in ["谢谢", "理解", "明白", "麻烦"]):
+            eq += 15
+        if any(w in text for w in ["不行", "随便", "管不了"]):
+            eq -= 20
 
-        resp_score = 50
-        if len(user_input) > 10:
-            resp_score += 10
-        if any(w in text for w in ["但是", "不过", "其实"]):
-            resp_score += 10
-        scores["response_quality"] = min(100, max(0, resp_score))
+        quality = 50
+        if len(user_input) >= 12:
+            quality += 10
+        if any(w in text for w in ["因为", "所以", "首先", "其次"]):
+            quality += 12
 
-        pressure_score = 50
-        if any(w in text for w in ["喝", "干", "敬", "陪"]):
-            pressure_score += 15
-        if any(w in text for w in ["来", "好", "行"]):
-            pressure_score += 10
-        scores["pressure_handling"] = min(100, max(0, pressure_score))
+        pressure = 55 + int(emo.get("confidence", 50)) // 10 - int(emo.get("nervous", 20)) // 10
+        culture = 55
+        if any(w in text for w in ["您", "敬", "请"]):
+            culture += 10
 
-        culture_score = 50
-        if any(w in text for w in ["您", "叔", "舅", "婶", "哥"]):
-            culture_score += 20
-        if any(w in text for w in ["敬", "先干", "随意"]):
-            culture_score += 15
-        scores["cultural_fit"] = min(100, max(0, culture_score))
+        def clip(v: int) -> int:
+            return max(0, min(100, int(v)))
 
-        return scores
-
-    def _calculate_delta(self, scores: Dict) -> int:
-        total = sum(
-            scores.get(k, 50) * v["weight"] for k, v in self.EVAL_CRITERIA.items()
-        )
-        if total >= 70:
-            return 8
-        elif total >= 55:
-            return 3
-        elif total >= 40:
-            return -2
-        return -8
-
-    def _generate_judgment(self, scores: Dict, delta: int) -> str:
-        if delta >= 8:
-            return "回合胜利！你的应对得体有力，气场上升！"
-        elif delta >= 3:
-            return "表现不错，稳住了局面。"
-        elif delta >= 0:
-            return "势均力敌，双方各有千秋。"
-        return "这一轮略显被动，需要更有力的回应！"
+        return {
+            "emotional_intelligence": clip(eq),
+            "response_quality": clip(quality),
+            "pressure_handling": clip(pressure),
+            "cultural_fit": clip(culture),
+        }
 
 
 class RescuerAgent(BaseAgent):
     RESCUE_TEMPLATES = {
-        "refuse_polite": [
-            "您太客气了！我今天真不能喝了，改天我专门请您！",
-            "大舅您这让我都不好意思了，我真得量力而行啊！",
+        "shandong_dinner": [
+            "先接情绪再设边界：您说得对，我先敬茶，酒我少量慢来。",
+            "先给台阶：我今天状态一般，先把这杯换成茶，咱照样把话聊透。",
         ],
-        "deflect": [
-            "这事儿咱回头细说，今儿高兴先让我敬您一杯茶！",
-            "大舅您说得对！对了，我最近听说个事儿...",
+        "business_dinner": [
+            "先确认共同目标，再给时间表：这事我今晚给你一版可执行节点。",
+            "先稳关系再谈条件：合作方向一致，细节我明早给你书面版。",
         ],
-        "compliment": [
-            "大舅您真是太客气了！您身体这么硬朗！",
-            "您这话说的，我哪敢跟您比啊！",
+        "interview": [
+            "用 STAR：先结论，再说情境-行动-结果，最后补复盘。",
+            "先给指标：我做了X，结果Y提升Z%，复盘里我会改进A。",
         ],
-        "accept_graceful": [
-            "既然大舅都这么说了，我哪能不给面子！",
-            "您这么看得起我，我必须得陪一个！",
+        "debate": [
+            "先定义争议点，再给两条证据，最后预判对方反驳。",
+            "把命题收窄到可验证范围，不要泛化。",
         ],
     }
 
@@ -706,74 +432,48 @@ class RescuerAgent(BaseAgent):
         super().__init__(AgentRole.RESCUER, llm)
 
     def think(self, context: Dict) -> AgentMessage:
+        scenario_id = context.get("scenario_id", "shandong_dinner")
         user_input = context.get("user_input", "")
         ai_response = context.get("ai_response", "")
-        dominance = context.get("dominance", {"user": 50, "ai": 50})
-
-        strategy = self._analyze_situation(user_input, ai_response, dominance)
 
         if self.llm:
             try:
-                prompt = f"你是酒桌情商大师。用户说：{user_input}。AI回应：{ai_response}。用户气场：{dominance['user']}。请给出一个高情商回复建议，不超过40字。"
-                suggestion = self.llm.generate(prompt, max_new_tokens=80)
-                return AgentMessage(
-                    self.role,
-                    suggestion.strip(),
-                    {"strategy": strategy},
-                    confidence=0.9,
+                prompt = (
+                    f"场景:{scenario_id}\n用户:{user_input}\nNPC:{ai_response}\n"
+                    "给一句30字内救场建议，只输出建议，不要解释。"
                 )
-            except:
+                txt = (self.llm.generate(prompt, max_new_tokens=80, temperature=0.6) or "").strip()
+                txt = re.sub(r"\s+", " ", txt)
+                if txt:
+                    return AgentMessage(self.role, txt[:60], {"scenario": scenario_id}, 0.9)
+            except Exception:
                 pass
 
-        import random
-
-        templates = self.RESCUE_TEMPLATES.get(
-            strategy, self.RESCUE_TEMPLATES["deflect"]
-        )
-        return AgentMessage(
-            self.role, random.choice(templates), {"strategy": strategy}, confidence=0.75
-        )
-
-    def _analyze_situation(
-        self, user_input: str, ai_response: str, dominance: Dict
-    ) -> str:
-        text = (user_input + " " + ai_response).lower()
-        if dominance["user"] < 30:
-            return "compliment"
-        if any(w in text for w in ["必须", "一定", "肯定"]):
-            return "refuse_polite"
-        if any(w in text for w in ["不喝", "不能", "不行"]):
-            return "deflect"
-        if any(w in text for w in ["来", "喝", "敬"]):
-            return "accept_graceful"
-        return "deflect"
+        pool = self.RESCUE_TEMPLATES.get(scenario_id, self.RESCUE_TEMPLATES["shandong_dinner"])
+        return AgentMessage(self.role, random.choice(pool), {"scenario": scenario_id}, 0.75)
 
 
 class MemoryAgent(BaseAgent):
     def __init__(self, llm=None):
         super().__init__(AgentRole.MEMORY, llm)
-        self.long_term_memory: Dict = {}
+        self.long_term_memory: Dict[str, Dict] = {}
 
     def think(self, context: Dict) -> AgentMessage:
-        session_id = context.get("session_id")
+        session_id = context.get("session_id", "default")
         action = context.get("memory_action", "retrieve")
 
         if action == "store":
             self._store_memory(session_id, context.get("turn_data", {}))
-            return AgentMessage(self.role, "已存储", confidence=1.0)
-        elif action == "retrieve":
-            memory = self._retrieve_memory(session_id)
-            return AgentMessage(
-                self.role, json.dumps(memory), {"memory": memory}, confidence=1.0
-            )
+            return AgentMessage(self.role, "stored", confidence=1.0)
 
-        return AgentMessage(self.role, "无效操作", confidence=0.5)
+        memory = self._retrieve_memory(session_id)
+        return AgentMessage(self.role, json.dumps(memory, ensure_ascii=False), {"memory": memory}, 1.0)
 
     def _store_memory(self, session_id: str, turn_data: Dict):
         if session_id not in self.long_term_memory:
             self.long_term_memory[session_id] = {"turns": [], "scores": []}
         self.long_term_memory[session_id]["turns"].append(turn_data)
-        if "scores" in turn_data:
+        if "scores" in turn_data and turn_data["scores"]:
             self.long_term_memory[session_id]["scores"].append(turn_data["scores"])
 
     def _retrieve_memory(self, session_id: str) -> Dict:
@@ -789,92 +489,38 @@ class MultiAgentOrchestrator:
             AgentRole.RESCUER: RescuerAgent(llm),
             AgentRole.MEMORY: MemoryAgent(llm),
         }
-
-        try:
-            from core.agents.emotion_coordinator import EmotionCoordinatorAgent
-
-            self.emotion_coordinator = EmotionCoordinatorAgent(llm)
-            self.use_empathy_mode = True
-        except ImportError:
-            self.use_empathy_mode = False
-
+        self.agents_list = [self.agents[AgentRole.DIALOGUE]]
         self.state = AgentState()
-        self.agents_list = list(self.agents.values())
 
     def process_turn(self, context: Dict) -> Dict:
-        memory_msg = self.agents[AgentRole.MEMORY].think(
-            {**context, "memory_action": "retrieve"}
-        )
+        memory_msg = self.agents[AgentRole.MEMORY].think({**context, "memory_action": "retrieve"})
         context["memory"] = json.loads(memory_msg.content) if memory_msg.content else {}
-
-        if self.use_empathy_mode and context.get("multimodal"):
-            multimodal_data = context.get("multimodal", {})
-            emotion_state = multimodal_data.get("emotion_state", {})
-
-            if emotion_state:
-                npc_configs = context.get("characters", [])
-                dialogue_context = {
-                    "turn_count": context.get("turn_count", 0),
-                    "current_speaker": "",
-                }
-
-                coordination = self.emotion_coordinator.coordinate(
-                    user_multimodal_state=emotion_state,
-                    dialogue_context=dialogue_context,
-                    npc_configs=npc_configs,
-                )
-
-                context["multimodal"]["coordination"] = coordination
 
         dialogue_msg = self.agents[AgentRole.DIALOGUE].think(context)
         context["ai_response"] = dialogue_msg.content
-
         evaluator_msg = self.agents[AgentRole.EVALUATOR].think(context)
 
         turn_data = {
-            "user_input": context.get("user_input"),
+            "user_input": context.get("user_input", ""),
             "ai_response": dialogue_msg.content,
             "speaker": dialogue_msg.metadata.get("speaker"),
             "scores": evaluator_msg.metadata.get("scores"),
         }
-        self.agents[AgentRole.MEMORY].think(
-            {**context, "memory_action": "store", "turn_data": turn_data}
-        )
+        self.agents[AgentRole.MEMORY].think({**context, "memory_action": "store", "turn_data": turn_data})
+        self.state.history.extend([memory_msg, dialogue_msg, evaluator_msg])
 
-        for msg in [memory_msg, dialogue_msg, evaluator_msg]:
-            self.state.history.append(msg)
-
-        result = {
+        return {
             "ai_response": dialogue_msg.content,
             "speaker": dialogue_msg.metadata.get("speaker"),
             "judgment": evaluator_msg.content,
             "scores": evaluator_msg.metadata.get("scores", {}),
-            "new_dominance": evaluator_msg.metadata.get(
-                "new_dominance", {"user": 50, "ai": 50}
-            ),
-            "game_over": self._check_game_over(
-                evaluator_msg.metadata.get("new_dominance", {})
-            ),
+            "new_dominance": evaluator_msg.metadata.get("new_dominance", {"user": 50, "ai": 50}),
+            "game_over": self._check_game_over(evaluator_msg.metadata.get("new_dominance", {})),
         }
 
-        if self.use_empathy_mode and context.get("multimodal"):
-            multimodal_data = context.get("multimodal", {})
-            emotion_state = multimodal_data.get("emotion_state", {})
-            if emotion_state:
-                result["emotion_analysis"] = {
-                    "primary_emotion": emotion_state.get("primaryEmotion", "neutral"),
-                    "intensity": emotion_state.get("emotionIntensity", 0.5),
-                    "hidden_sentiment": emotion_state.get("hiddenSentiment"),
-                    "inconsistencies": emotion_state.get("inconsistencies", []),
-                    "coordination": context["multimodal"].get("coordination", {}),
-                }
-
-        return result
-
     def get_rescue_suggestion(self, context: Dict) -> str:
-        rescue_msg = self.agents[AgentRole.RESCUER].think(context)
-        return rescue_msg.content
+        return self.agents[AgentRole.RESCUER].think(context).content
 
     def _check_game_over(self, dominance: Dict) -> bool:
-        user = dominance.get("user", 50)
+        user = int((dominance or {}).get("user", 50))
         return user <= 10 or user >= 90

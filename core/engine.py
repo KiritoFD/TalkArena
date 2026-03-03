@@ -1,11 +1,13 @@
 """
-核心处理器
-整合 Multi-Agent、RAG、决策引擎、防幻觉机制
+Core runtime engine for TalkArena.
 """
 
-from typing import Dict, List, Optional, Generator, Any
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Any, Dict, Generator, List, Optional
 import logging
+import uuid
 
 logger = logging.getLogger("TalkArena")
 
@@ -13,13 +15,11 @@ logger = logging.getLogger("TalkArena")
 @dataclass
 class ProcessResult:
     stage: str
-    data: Dict = None
-    error: str = None
+    data: Optional[Dict] = None
+    error: Optional[str] = None
 
 
 class TalkArenaEngine:
-    """TalkArena 核心引擎 - 整合所有高级技术"""
-
     def __init__(self, llm=None, enable_tts: bool = False):
         from core.agents.multi_agent import MultiAgentOrchestrator
         from core.rag.knowledge_base import RAGEngine
@@ -35,26 +35,47 @@ class TalkArenaEngine:
         self.decision_engine = DecisionEngine()
         self.validators: Dict[str, OutputValidator] = {}
 
-        self.sessions: Dict[str, Dict] = {}
-        self.scenarios: Dict[str, Dict] = self._load_scenarios()
+        self.sessions: Dict[str, Dict[str, Any]] = {}
+        self.scenarios: Dict[str, Dict[str, Any]] = self._load_scenarios()
 
-        logger.info("TalkArenaEngine 初始化完成")
-        logger.info("- Multi-Agent: 已启用")
-        logger.info("- RAG知识库: 已启用")
-        logger.info("- 决策引擎: 已启用")
-        logger.info("- 防幻觉机制: 已启用")
-
-    def _load_scenarios(self) -> Dict:
-        """加载场景配置"""
+    def _load_scenarios(self) -> Dict[str, Dict[str, Any]]:
         return {
             "shandong_dinner": {
-                "name": "山东人的饭桌",
+                "name": "家庭饭桌试炼",
+                "description": "家庭饭桌高压社交，强调礼貌与边界感。",
                 "characters": [
-                    {"name": "大舅", "avatar": "👴", "bio": "主陪，德高望重的长辈"},
-                    {"name": "大妗子", "avatar": "👵", "bio": "旁观者，明劝实激"},
-                    {"name": "表哥", "avatar": "👨", "bio": "副陪，起哄能手"},
+                    {"name": "大舅", "avatar": "host", "bio": "senior elder"},
+                    {"name": "大妗子", "avatar": "observer", "bio": "detail observer"},
+                    {"name": "表哥", "avatar": "reactor", "bio": "pace pusher"},
                 ],
-            }
+            },
+            "business_dinner": {
+                "name": "商务饭局谈判",
+                "description": "合作前夜饭局，关注信任、边界和执行。",
+                "characters": [
+                    {"name": "王总", "avatar": "sponsor", "bio": "result oriented"},
+                    {"name": "李总", "avatar": "bd", "bio": "deal pacing"},
+                    {"name": "周顾问", "avatar": "risk", "bio": "risk oriented"},
+                ],
+            },
+            "interview": {
+                "name": "高压结构化面试",
+                "description": "终面高压追问，强调结构化表达和证据。",
+                "characters": [
+                    {"name": "主面试官", "avatar": "lead", "bio": "decision quality"},
+                    {"name": "HR", "avatar": "hr", "bio": "fit assessment"},
+                    {"name": "技术负责人", "avatar": "tech", "bio": "technical depth"},
+                ],
+            },
+            "debate": {
+                "name": "立场攻防辩论",
+                "description": "围绕公共议题进行定义、证据与反驳攻防。",
+                "characters": [
+                    {"name": "正方辩手", "avatar": "pro", "bio": "benefit argument"},
+                    {"name": "反方辩手", "avatar": "con", "bio": "risk argument"},
+                    {"name": "点评席", "avatar": "judge", "bio": "logic scrutiny"},
+                ],
+            },
         }
 
     def start_session(
@@ -65,24 +86,19 @@ class TalkArenaEngine:
         scene_description: str = "",
         user_info: Optional[Dict] = None,
     ) -> str:
-        """开始会话"""
         from core.validators.output_validator import OutputValidator
 
-        import uuid
+        sid = str(uuid.uuid4())[:8]
+        scenario = dict(self.scenarios.get(scenario_id, self.scenarios["shandong_dinner"]))
 
-        session_id = str(uuid.uuid4())[:8]
-
-        scenario = self.scenarios.get(scenario_id, {}).copy()
         if characters:
             scenario["characters"] = characters
-        
-        # 添加场景描述和用户信息
         if scene_description:
             scenario["description"] = scene_description
         if user_info:
             scenario["user_info"] = user_info
 
-        self.sessions[session_id] = {
+        self.sessions[sid] = {
             "scenario_id": scenario_id,
             "scenario": scenario,
             "scene_name": scene_name or scenario.get("name", "TalkArena"),
@@ -91,50 +107,44 @@ class TalkArenaEngine:
             "history": [],
             "scores_history": [],
         }
-
-        self.validators[session_id] = OutputValidator(scenario.get("characters", []))
-
-        logger.info(f"会话创建: {session_id}")
-        return session_id
+        self.validators[sid] = OutputValidator(scenario.get("characters", []))
+        return sid
 
     def process_turn(
-        self, session_id: str, user_input: str, multimodal: Dict = None
+        self, session_id: str, user_input: str, multimodal: Optional[Dict] = None
     ) -> Generator[ProcessResult, None, None]:
-        """处理一轮对话 - 多Agent协同"""
         if session_id not in self.sessions:
-            yield ProcessResult("error", error="会话不存在")
+            yield ProcessResult("error", error="session_not_found")
             return
 
         session = self.sessions[session_id]
+        multimodal = multimodal or {}
 
-        yield ProcessResult("stage_analysis", data={"message": "分析用户输入..."})
-
+        yield ProcessResult("stage_analysis", {"message": "analyzing"})
         analysis = self.decision_engine.analyze_input(
             user_input,
             {"dominance": session["dominance"], "turn_count": session["turn_count"]},
         )
 
-        yield ProcessResult("stage_rag", data={"message": "检索知识库..."})
-
+        yield ProcessResult("stage_rag", {"message": "retrieving"})
         rag_context = self.rag_engine.enhance_context(
             user_input, {"intent": analysis["intent"], "topics": analysis["topics"]}
         )
 
-        yield ProcessResult("stage_planning", data={"message": "规划响应策略..."})
-
+        yield ProcessResult("stage_planning", {"message": "planning"})
         decisions = self.decision_engine.make_decision(
             {
                 "dominance": session["dominance"],
                 "turn_count": session["turn_count"],
                 "intent": analysis["intent"],
-                "multimodal": {"available": multimodal is not None},
+                "multimodal": {"available": bool(multimodal)},
             }
         )
 
-        yield ProcessResult("stage_generation", data={"message": "生成AI响应..."})
-
+        yield ProcessResult("stage_generation", {"message": "generating"})
         context = {
             "user_input": user_input,
+            "scenario_id": session.get("scenario_id", "shandong_dinner"),
             "characters": session["scenario"].get("characters", []),
             "turn_count": session["turn_count"],
             "dominance": session["dominance"],
@@ -144,10 +154,7 @@ class TalkArenaEngine:
             "scene_description": session["scenario"].get("description", ""),
             "user_info": session["scenario"].get("user_info"),
         }
-
         result = self.multi_agent.process_turn(context)
-
-        yield ProcessResult("stage_validation", data={"message": "验证输出..."})
 
         validator = self.validators.get(session_id)
         if validator:
@@ -161,6 +168,7 @@ class TalkArenaEngine:
                 "ai": result.get("ai_response", ""),
                 "speaker": result.get("speaker"),
                 "scores": result.get("scores"),
+                "multimodal": multimodal or {},
             }
         )
         if "scores" in result:
@@ -168,7 +176,7 @@ class TalkArenaEngine:
 
         yield ProcessResult(
             "complete",
-            data={
+            {
                 "ai_text": result.get("ai_response", ""),
                 "speaker": result.get("speaker"),
                 "judgment": result.get("judgment", ""),
@@ -182,43 +190,38 @@ class TalkArenaEngine:
         )
 
     def get_rescue_suggestion(self, session_id: str) -> str:
-        """获取救场建议"""
         if session_id not in self.sessions:
             return "会话不存在"
-
         session = self.sessions[session_id]
-
+        last = session["history"][-1] if session["history"] else {}
         context = {
-            "user_input": session["history"][-1].get("user", "")
-            if session["history"]
-            else "",
-            "ai_response": session["history"][-1].get("ai", "")
-            if session["history"]
-            else "",
+            "user_input": last.get("user", ""),
+            "ai_response": last.get("ai", ""),
+            "scenario_id": session.get("scenario_id", "shandong_dinner"),
+            "scene_description": session["scenario"].get("description", ""),
+            "user_info": session["scenario"].get("user_info"),
+            "characters": session["scenario"].get("characters", []),
+            "multimodal": last.get("multimodal", {}),
             "dominance": session["dominance"],
             "turn_count": session["turn_count"],
         }
-
         return self.multi_agent.get_rescue_suggestion(context)
 
-    def end_session(self, session_id: str) -> Dict:
-        """结束会话并生成报告"""
+    def end_session(self, session_id: str) -> Dict[str, Any]:
         if session_id not in self.sessions:
-            return {"error": "会话不存在"}
+            return {"error": "session_not_found"}
 
         session = self.sessions[session_id]
-
-        avg_scores = {}
+        avg_scores: Dict[str, float] = {}
         if session["scores_history"]:
-            for key in session["scores_history"][0].keys():
-                values = [s.get(key, 50) for s in session["scores_history"]]
-                avg_scores[key] = sum(values) / len(values)
+            keys = session["scores_history"][0].keys()
+            for key in keys:
+                vals = [s.get(key, 50) for s in session["scores_history"]]
+                avg_scores[key] = sum(vals) / len(vals)
 
-        total_score = sum(avg_scores.values()) / len(avg_scores) if avg_scores else 50
-
-        medal = self._determine_medal(total_score)
-
-        summary = self._generate_summary(session, avg_scores)
+        total = sum(avg_scores.values()) / len(avg_scores) if avg_scores else 50.0
+        medal = self._determine_medal(total)
+        summary = self._generate_summary(session)
         suggestion = self._generate_suggestion(avg_scores)
 
         return {
@@ -228,7 +231,7 @@ class TalkArenaEngine:
             "scores": {
                 "emotional": round(avg_scores.get("emotional_intelligence", 50)),
                 "reaction": round(avg_scores.get("response_quality", 50)),
-                "total": round(total_score),
+                "total": round(total),
             },
             "summary": summary,
             "suggestion": suggestion,
@@ -236,64 +239,42 @@ class TalkArenaEngine:
         }
 
     def _determine_medal(self, score: float) -> str:
-        """确定勋章"""
         if score >= 85:
-            return "🏆 酒桌王者"
-        elif score >= 70:
-            return "🥇 情商高手"
-        elif score >= 55:
-            return "🥈 应变达人"
-        elif score >= 40:
-            return "🥉 初出茅庐"
-        else:
-            return "💔 需要修炼"
+            return "🥇"
+        if score >= 70:
+            return "🥈"
+        if score >= 55:
+            return "🥉"
+        return "📘"
 
-    def _generate_summary(self, session: Dict, scores: Dict) -> str:
-        """生成总结"""
-        turn_count = session["turn_count"]
-        final_dominance = session["dominance"]["user"]
+    def _generate_summary(self, session: Dict[str, Any]) -> str:
+        turns = session["turn_count"]
+        user_dom = session["dominance"].get("user", 50)
+        if user_dom >= 70:
+            return f"{turns}轮对话中你保持了主动节奏，表达稳定。"
+        if user_dom >= 50:
+            return f"{turns}轮对话中你整体稳住了局面。"
+        return f"{turns}轮对话中你在压力下有波动，建议继续训练。"
 
-        if final_dominance >= 70:
-            return f"经过{turn_count}轮较量，你以{final_dominance}分的气场压制全场，展现了出色的酒桌应变能力！"
-        elif final_dominance >= 50:
-            return f"经过{turn_count}轮较量，你稳住了局面，气场值{final_dominance}分，表现中规中矩。"
-        else:
-            return f"经过{turn_count}轮较量，你稍显被动，气场值{final_dominance}分，还需要多加练习。"
+    def _generate_suggestion(self, scores: Dict[str, float]) -> str:
+        if not scores:
+            return "下一轮建议：结论先行，给出1条可验证证据。"
+        if scores.get("response_quality", 50) < 60:
+            return "提升结构化表达：先结论，再证据，再复盘。"
+        if scores.get("pressure_handling", 50) < 60:
+            return "高压追问下放慢语速，优先回答问题主干。"
+        return "保持当前节奏，增加量化细节让回答更有说服力。"
 
-    def _generate_suggestion(self, scores: Dict) -> str:
-        """生成建议"""
-        suggestions = []
-
-        eq = scores.get("emotional_intelligence", 50)
-        if eq < 50:
-            suggestions.append("多使用敬语和感谢词，提升情商表现")
-
-        resp = scores.get("response_quality", 50)
-        if resp < 50:
-            suggestions.append("回答可以更有条理，适当使用转折词")
-
-        if not suggestions:
-            suggestions.append("整体表现不错，继续保持！")
-
-        return suggestions[0]
-
-    def _generate_npc_thoughts(self, session: Dict) -> List[Dict]:
-        """生成NPC内心OS"""
+    def _generate_npc_thoughts(self, session: Dict[str, Any]) -> List[Dict[str, str]]:
         characters = session["scenario"].get("characters", [])
         thoughts = []
-
+        user_dom = session["dominance"].get("user", 50)
         for char in characters:
-            name = char.get("name", "NPC")
-
-            if session["dominance"]["user"] >= 70:
-                thought = "这年轻人有两下子，不得不服！"
-            elif session["dominance"]["user"] >= 50:
-                thought = "还行，能应付得来。"
+            if user_dom >= 70:
+                thought = "这个回答很稳，节奏掌控不错。"
+            elif user_dom >= 50:
+                thought = "有来有回，继续看后续发挥。"
             else:
-                thought = "还是太嫩了点，得多练练。"
-
-            thoughts.append(
-                {"name": name, "avatar": char.get("avatar", "👤"), "thought": thought}
-            )
-
+                thought = "压力上来后出现犹豫，还能再提升。"
+            thoughts.append({"name": char.get("name", "NPC"), "avatar": char.get("avatar", "npc"), "thought": thought})
         return thoughts

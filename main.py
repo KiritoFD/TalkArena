@@ -154,7 +154,7 @@ class ChatReq(BaseModel):
 
 class SessionReq(BaseModel):
     scenario_id: str = "shandong_dinner"
-    scene_name: str = "家庭聚会"
+    scene_name: str = "家庭饭桌试炼"
     characters: Optional[List[Dict]] = []
     scene_description: Optional[str] = ""
     user_info: Optional[Dict] = None
@@ -168,7 +168,7 @@ class MMReq(BaseModel):
 
 class ScenarioGenerateReq(BaseModel):
     scene_type: str = "shandong_dinner"
-    scene_name: str = "家庭聚会"
+    scene_name: str = "家庭饭桌试炼"
     only_characters: bool = False
 
 
@@ -212,20 +212,16 @@ async def start_session(req: SessionReq):
         )
 
         session = eng.sessions[session_id]
-        opening = (
-            eng.multi_agent.agents_list[0].think(
-                {
-                    "characters": req.characters
-                    or session["scenario"].get("characters", []),
-                    "user_input": "",
-                    "turn_count": 0,
-                    "dominance": {"user": 50, "ai": 50},
-                    "scene_description": req.scene_description,
-                    "user_info": req.user_info,
-                }
-            )
-            if req.characters
-            else None
+        opening = eng.multi_agent.agents_list[0].think(
+            {
+                "scenario_id": req.scenario_id,
+                "characters": req.characters or session["scenario"].get("characters", []),
+                "user_input": "",
+                "turn_count": 0,
+                "dominance": {"user": 50, "ai": 50},
+                "scene_description": req.scene_description,
+                "user_info": req.user_info,
+            }
         )
 
         return {
@@ -350,7 +346,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
         llm = eng.multi_agent.llm  # 假设engine包含LLM实例
         
         # 根据场景类型生成不同的prompt
-        if req.scene_type == "shandong_dinner":
+        if req.scene_type in ("shandong_dinner", "business_dinner"):
             if req.only_characters:
                 prompt = f"""
 请为一场山东饭桌场景生成3个饭桌成员的详细信息，每个成员包括：
@@ -519,47 +515,41 @@ async def generate_scenario(req: ScenarioGenerateReq):
 
 @app.get("/api/scenarios/list")
 async def list_scenarios():
-    """获取可用场景列表"""
-    from core.scenarios import get_registry
-
-    registry = get_instance = get_registry()
-    templates = registry.list_templates()
-
+    """获取可用场景列表（精简为4个高质量场景）"""
     scenarios = [
         {
             "id": "shandong_dinner",
-            "name": "山东人的饭桌",
+            "name": "家庭饭桌试炼",
             "category": "dinner",
-            "description": "经典山东酒桌文化场景",
+            "description": "春节家宴中的高压社交，练边界与分寸",
             "icon": "🍜",
-            "sub_scenes": ["家庭聚会", "单位聚餐", "商务宴请", "同学聚会", "招待客户"],
+            "sub_scenes": ["家庭饭桌试炼"],
+        },
+        {
+            "id": "business_dinner",
+            "name": "商务饭局谈判",
+            "category": "dinner",
+            "description": "在敬酒和寒暄里推进合作，不失礼也不失守",
+            "icon": "🤝",
+            "sub_scenes": ["商务饭局谈判"],
+        },
+        {
+            "id": "interview",
+            "name": "高压结构化面试",
+            "category": "interview",
+            "description": "结论先行、证据支撑、压力追问",
+            "icon": "💼",
+            "sub_scenes": ["高压结构化面试"],
+        },
+        {
+            "id": "debate",
+            "name": "立场攻防辩论",
+            "category": "debate",
+            "description": "定义清晰、证据对撞、精准反驳",
+            "icon": "⚔️",
+            "sub_scenes": ["立场攻防辩论"],
         },
     ]
-
-    for t in templates:
-        if t["template_id"] == "interview":
-            scenarios.append(
-                {
-                    "id": "interview",
-                    "name": "面试实战",
-                    "category": "interview",
-                    "description": "技术面试、HR面试、行为面试",
-                    "icon": "💼",
-                    "sub_scenes": ["技术面试", "HR面试", "行为面试", "群面"],
-                }
-            )
-        elif t["template_id"] == "debate":
-            scenarios.append(
-                {
-                    "id": "debate",
-                    "name": "辩论训练",
-                    "category": "debate",
-                    "description": "提升逻辑思维和表达能力",
-                    "icon": "🎤",
-                    "sub_scenes": ["AI对就业", "远程工作", "应试教育", "社交媒体"],
-                }
-            )
-
     return {"success": True, "data": scenarios}
 
 
@@ -780,7 +770,7 @@ select:focus{outline:none;border-color:#667eea}
 <div class="fi"><b>核心玩法</b> - 在山东酒桌文化的情商高压测试中生存，掌握应对技巧</div>
 <div class="fi"><b>技术亮点</b> - 多Agent协同决策、知识库增强生成、智能任务规划</div>
 <div class="fi"><b>训练价值</b> - 实时多模态分析、高情商回复建议、详细复盘报告</div>
-<div class="fi"><b>场景丰富</b> - 5种经典场景，从家庭聚会到商务宴请，难度递增</div>
+<div class="fi"><b>场景丰富</b> - 4种高质量场景，覆盖饭桌、商务、面试与辩论</div>
 </div>
 <button class="btn1" onclick="goCfg()">开始挑战</button>
 </div>
@@ -881,41 +871,39 @@ select:focus{outline:none;border-color:#667eea}
 <div id="p4" class="page"><div class="rc" id="rc"></div></div>
 
 <script>
-let sid=null,scene='家庭聚会',mems=[],chars=[],hist=[],cam=null,mic=null,isC=0,isM=0;
+let sid=null,scene='家庭饭桌试炼',mems=[],chars=[],hist=[],cam=null,mic=null,isC=0,isM=0;
 let selectedScenarioId='shandong_dinner';
 let emotionData={confidence:50,calm:50,nervous:20,focus:50};
 let emotionInterval=null;
 let talkingHeadTimer=null,lastVoiceLevel=0,lastSpeaker='';
 const npcRenderState={};
 const pool={
-'家庭聚会':{id:'shandong_dinner',icon:'🍜',members:[{a:'👴',n:'大舅',r:'主陪·长辈',b:'德高望重，极讲规矩'},{a:'👵',n:'大妗子',r:'旁观者',b:'数着你喝了几杯'},{a:'👨',n:'表哥',r:'副陪',b:'最擅长说"我陪一个"'},{a:'👨‍🦳',n:'二叔',r:'话唠长辈',b:'喜欢翻旧账'}]},
-'单位聚餐':{id:'shandong_dinner',icon:'🏢',members:[{a:'👨‍💼',n:'王局长',r:'主陪·局领导',b:'深谙官场礼仪'},{a:'👩',n:'小赵',r:'实诚晚辈',b:'性格耿直'},{a:'🧔',n:'老张',r:'酒桌老炮',b:'三句不离酒'}]},
-'商务宴请':{id:'shandong_dinner',icon:'🤝',members:[{a:'👨‍💼',n:'王总',r:'主陪·老板',b:'深谙商务礼仪'},{a:'👔',n:'李总',r:'副陪',b:'能言善辩'},{a:'👨‍💻',n:'小刘',r:'助理',b:'负责倒酒递烟'}]},
-'同学聚会':{id:'shandong_dinner',icon:'🎓',members:[{a:'🧑‍💼',n:'老同学',r:'攀比狂魔',b:'总爱炫耀'},{a:'👨',n:'班长',r:'组局者',b:'最爱回忆当年'},{a:'👧',n:'校花',r:'气氛组',b:'当年的女神'}]},
-'招待客户':{id:'shandong_dinner',icon:'🎁',members:[{a:'👔',n:'李总',r:'东道主',b:'热情招待'},{a:'🧔',n:'老张',r:'气氛担当',b:'负责活跃气氛'},{a:'👩',n:'小王',r:'贴心助理',b:'负责倒酒递烟'}]},
-'技术面试':{id:'interview',icon:'💼',members:[{a:'👨‍💼',n:'面试官',r:'技术经理',b:'资深技术专家'},{a:'👩‍💻',n:'HR',r:'HR负责人',b:'负责综合素质评估'},{a:'🧑‍💻',n:'求职者B',r:'竞争者',b:'技术能力很强'}]},
-'HR面试':{id:'interview',icon:'👔',members:[{a:'👩',n:'HR总监',r:'HR负责人',b:'经验丰富'},{a:'👨‍💼',n:'部门主管',r:'用人部门',b:'注重团队匹配'},{a:'👨‍💻',n:'前台',r:'接待',b:'负责候选人引导'}]},
-'行为面试':{id:'interview',icon:'🎯',members:[{a:'👨‍💼',n:'面试官',r:'HR专家',b:'擅长STAR法则'},{a:'👩‍💼',n:'观察员',r:'HR',b:'细致观察细节'},{a:'🧔',n:'求职者A',r:'竞争者',b:'经历丰富'}]},
-'群面':{id:'interview',icon:'👥',members:[{a:'👨‍💼',n:'面试官',r:'主考官',b:'统筹全场'},{a:'🧑‍💻',n:'候选人A',r:'竞争者',b:'表现积极'},{a:'👩‍💻',n:'候选人B',r:'竞争者',b:'逻辑清晰'},{a:'🧔',n:'候选人C',r:'竞争者',b:'领导力强'}]},
-'AI对就业':{id:'debate',icon:'🤖',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'AI创造新岗位'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'AI取代人类工作'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
-'远程工作':{id:'debate',icon:'🏠',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'远程提高效率'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'远程降低协作'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
-'应试教育':{id:'debate',icon:'📚',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'保证公平'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'扼杀创造力'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]},
-'社交媒体':{id:'debate',icon:'📱',members:[{a:'👨‍💼',n:'正方辩手',r:'支持方',b:'连接世界'},{a:'👩‍💻',n:'反方辩手',r:'反对方',b:'隐私泄露'},{a:'🧔',n:'主持人',r:'裁判',b:'主持辩论'}]}
+"家庭饭桌试炼":{id:"shandong_dinner",icon:"🍜",members:[
+{a:"👴",n:"大舅",r:"主陪·长辈",b:"看重礼数与体面，善于在热闹中施压"},
+{a:"👵",n:"大妗子",r:"观察者",b:"温和追问细节，擅长把话题落到现实"},
+{a:"🧑",n:"表哥",r:"气氛组",b:"会替长辈推进节奏，也会给你台阶"}
+]},
+"商务饭局谈判":{id:"business_dinner",icon:"🤝",members:[
+{a:"👨‍💼",n:"王总",r:"甲方负责人",b:"注重结果与执行，关心合作确定性"},
+{a:"👔",n:"李总",r:"乙方商务",b:"善于铺垫关系，强调互利与长期合作"},
+{a:"🧠",n:"周顾问",r:"风险顾问",b:"盯条款边界和落地风险，追问很尖锐"}
+]},
+"高压结构化面试":{id:"interview",icon:"💼",members:[
+{a:"👨‍💼",n:"主面试官",r:"主考官",b:"重视问题拆解与决策质量"},
+{a:"👩‍💼",n:"HR",r:"HR负责人",b:"关注价值观、沟通方式与团队匹配"},
+{a:"🧑‍💻",n:"技术负责人",r:"技术面",b:"追问细节真实性与交付过程"}
+]},
+"立场攻防辩论":{id:"debate",icon:"⚔️",members:[
+{a:"🟦",n:"正方辩手",r:"主张方",b:"强调收益、效率与可行性"},
+{a:"🟥",n:"反方辩手",r:"质疑方",b:"强调代价、风险与外部性"},
+{a:"🧑‍⚖️",n:"点评席",r:"评审",b:"专抓逻辑漏洞，追问证据来源"}
+]}
 };
 const presetSceneDescriptions={
-'家庭聚会':'春节返乡家庭聚会，长辈主导节奏，话题围绕近况与发展，氛围热闹但有压力。',
-'单位聚餐':'部门团建后的单位聚餐，领导在场，交流夹杂工作与人情，强调分寸与礼节。',
-'商务宴请':'与合作方的商务宴请，目标是推进合作并建立信任，既要热情也要专业。',
-'同学聚会':'毕业多年后的同学重聚，聊天轻松却暗含比较，考验表达与边界感。',
-'招待客户':'东道主招待重点客户的晚宴，核心是维护关系并推进合作意向。',
-'技术面试':'技术岗位终面，面试官关注技术深度、问题拆解和压力下表达。',
-'HR面试':'HR主导的综合面试，重点评估沟通、价值观和团队匹配度。',
-'行为面试':'行为事件面试，要求候选人用真实案例呈现决策、协作与复盘能力。',
-'群面':'多候选人群面，关注协作、领导力、推进效率和观点影响力。',
-'AI对就业':'围绕AI与就业影响的结构化辩论，强调论证、反驳与证据质量。',
-'远程工作':'围绕远程办公利弊的辩论，关注效率、协作和组织管理。',
-'应试教育':'围绕应试教育价值与局限的辩论，检验逻辑清晰度与立场一致性。',
-'社交媒体':'围绕社交媒体影响的辩论，涉及隐私、信息质量与社会连接。'
+"家庭饭桌试炼":"春节返乡家宴，长辈主导节奏，话题围绕工作进展、婚恋与人情往来。你需要稳住礼貌、边界与表达力度。",
+"商务饭局谈判":"合作签约前夜的商务晚宴，重点在信任、利益边界与合作节奏。语言要有分寸，既给面子也守底线。",
+"高压结构化面试":"终面场景，考察结构化表达、抗压、复盘能力和团队协作倾向。答案需结论先行、证据支撑。",
+"立场攻防辩论":"围绕公共议题展开攻防，强调定义清晰、证据质量和反驳针对性。避免空泛口号。"
 };
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
@@ -949,7 +937,7 @@ function buildHeadCard(c){return `<div class="ci state-idle look-user" data-n="$
 function setRenderState(name,patch={}){if(!npcRenderState[name])npcRenderState[name]={state:'idle',look:'user',backchannel:''};Object.assign(npcRenderState[name],patch)}
 function applyRenderState(name){const card=document.querySelector(`.ci[data-n="${name}"]`);if(!card)return;const st=npcRenderState[name]||{state:'idle',look:'user',backchannel:''};card.classList.remove('state-idle','state-listening','state-reacting','state-speaking','look-user','look-speaker','has-backchannel');card.classList.add(`state-${st.state}`);card.classList.add(`look-${st.look||'user'}`);if(st.backchannel){card.classList.add('has-backchannel');const bc=card.querySelector('.backchannel');if(bc)bc.textContent=st.backchannel}}
 function blinkRandom(){document.querySelectorAll('#cl .ci').forEach(card=>{if(Math.random()<0.18){card.classList.add('blink');setTimeout(()=>card.classList.remove('blink'),120)}})}
-function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));if(stress>66||confusion>70)return 'controlled_rescue';if(scene.includes('面试'))return 'pressure_check';return 'table_banter'}
+function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));if(stress>66||confusion>70)return 'controlled_rescue';if(scene.includes('面试')||selectedScenarioId==='interview')return 'pressure_check';return 'table_banter'}
 function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;const names=chars.map(c=>c.n);if(!names.length)return;const beat=inferBeat();const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const wantsToSpeak=(lastVoiceLevel>48||$('ci2').value.trim().length>0)?1:0;const rescueMode=stress>65||confusion>70;let lead=lastSpeaker&&names.includes(lastSpeaker)?lastSpeaker:names[0];if(rescueMode){const hr=names.find(n=>/hr|人事|观察员/i.test(n));if(hr)lead=hr}names.forEach((name,i)=>{if(name===lead){setRenderState(name,{state:'speaking',look:'user',backchannel:''})}else{const reactive=beat==='table_banter'&&Math.random()>0.4;setRenderState(name,{state:reactive?'reacting':'listening',look:'speaker',backchannel:(reactive&&Math.random()>0.7)?'对对':''})}applyRenderState(name)});if(wantsToSpeak){const others=names.filter(n=>n!==lead);if(others.length){const n=others[Math.floor(Math.random()*others.length)];setRenderState(n,{state:'reacting',look:'user',backchannel:'我补一句'});applyRenderState(n)}}blinkRandom()},320)}
 function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
 function goCfg(){show('p2')}
@@ -970,12 +958,12 @@ function genMems(){
         } else if(scene.includes('商务') || scene.includes('客户')){
             userRole = '部门新人';
             userBackground = '作为公司的新人，你需要在商务宴请中展示专业素养，学会得体应对客户的各种话题和敬酒。';
-        } else if(scene.includes('同学')){
-            userRole = '普通同学';
-            userBackground = '作为聚会中的普通同学，你需要在老同学面前保持自然，既要应对怀旧话题，又要展现自己的成长。';
-        } else if(scene.includes('单位')){
-            userRole = '年轻员工';
-            userBackground = '作为单位的年轻员工，你需要在领导和同事面前展现得体，学会应对职场酒桌文化。';
+        } else if(scene.includes('面试')){
+            userRole = '候选人';
+            userBackground = '你需要结论先行、证据支撑，面对追问保持稳定和可验证性。';
+        } else if(scene.includes('辩论')){
+            userRole = '辩手';
+            userBackground = '你需要定义清晰、证据充分，并对对方核心论点做针对性反驳。';
         }
         
         window.userInfo = {
@@ -985,7 +973,7 @@ function genMems(){
             b: userBackground
         };
     }else{
-        mems=pool['家庭聚会'].members.slice(0,3);
+        mems=pool['家庭饭桌试炼'].members.slice(0,3);
         selectedScenarioId='shandong_dinner';
         
         // 默认用户信息
@@ -1310,7 +1298,7 @@ $('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
 chars.forEach(c=>{setRenderState(c.n,{state:'listening',look:'user',backchannel:''});applyRenderState(c.n)});
 runNonverbalLoop();
 updScr(50,50);
-try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars})});
+try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),user_info:(window.userInfo||null)})});
 const d=await r.json();if(!d.success){alert(d.error);return}
 sid=d.data.session_id;if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))}catch(e){alert(e)}
 }
