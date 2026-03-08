@@ -42,3 +42,6 @@ models/vosk-model-*/
 # Environment variables
 .env
 .env.local
+
+# Firebase Configuration
+core/auth/firebase_config.json

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
@@ -113,30 +113,30 @@ class DialogueAgent(BaseAgent):
             "fallback": "这个方向可以，先把时间表和责任边界说清楚。",
         },
         "interview": {
-            "name": "高压结构化面试",
-            "atmosphere": "节奏快、追问深，重证据链和复盘能力。",
-            "rhetoric": "结论前置，三段并列，少形容多事实。",
+            "name": "群面竞争场",
+            "atmosphere": "竞争激烈、同台竞技，主面试官在旁观察。",
+            "rhetoric": "结论前置，突出优势，展现团队合作意识。",
             "word_limit": 78,
             "characters": {
-                "主面试官": {
-                    "personality": "判断严格，关注抗压和清晰度。",
-                    "style": "追问关键细节，不接受空泛答案。",
+                "竞争者A": {
+                    "personality": "自信强势，善于表现自己。",
+                    "style": "积极发言，善于展示优势。",
                 },
-                "HR": {
-                    "personality": "看匹配度与稳定沟通。",
-                    "style": "温和提问，但直击价值观与协作方式。",
+                "竞争者B": {
+                    "personality": "沉稳细致，回答有条理。",
+                    "style": "稳扎稳打，回答有条理。",
                 },
-                "技术负责人": {
-                    "personality": "看技术深度与工程落地。",
-                    "style": "要场景、要指标、要取舍。",
+                "竞争者C": {
+                    "personality": "思维活跃，常有创新观点。",
+                    "style": "思维活跃，常有创新观点。",
                 },
             },
             "openings": {
-                "主面试官": "我们直接进入正题：先给结论，再给证据，再给复盘。",
-                "HR": "先放轻松，我们看三点：匹配度、稳定性、协作感。",
-                "技术负责人": "请用一个真实项目展开，重点讲权衡与结果。",
+                "竞争者A": "大家好，我先抛砖引玉，分享一下我的看法。",
+                "竞争者B": "我同意刚才的观点，我想补充一点。",
+                "竞争者C": "这个问题很有意思，我有不同的角度。",
             },
-            "fallback": "请你用 STAR 结构，给一个可量化结果的例子。",
+            "fallback": "我觉得这个问题可以从另一个角度来考虑。",
         },
         "debate": {
             "name": "立场攻防辩论",
@@ -210,6 +210,7 @@ class DialogueAgent(BaseAgent):
         user_info = context.get("user_info") or {}
         char_info = scene.get("characters", {}).get(speaker_name, {})
         multimodal = context.get("multimodal", {})
+        conversation_history = context.get("conversation_history", [])
 
         word_limit = int(scene.get("word_limit", 60))
         personality = char_info.get("personality", f"你是{speaker_name}")
@@ -221,6 +222,23 @@ class DialogueAgent(BaseAgent):
                 f"用户身份: {user_info.get('n', '用户')} / {user_info.get('r', '参与者')} / {user_info.get('b', '')}"
             )
 
+        # 构建对话历史字符串
+        history_str = ""
+        if conversation_history:
+            history_lines = []
+            for h in conversation_history:
+                speaker = h.get("speaker", "NPC")
+                user_msg = h.get("user", "")
+                ai_msg = h.get("ai", "")
+                if user_msg:
+                    history_lines.append(f"用户：{user_msg}")
+                if ai_msg and speaker == speaker_name:
+                    history_lines.append(f"{speaker_name}：{ai_msg}")
+                elif ai_msg:
+                    history_lines.append(f"{speaker}：{ai_msg}")
+            if history_lines:
+                history_str = "之前的对话:\n" + "\n".join(history_lines) + "\n\n"
+
         return (
             f"你在场景《{scene.get('name', '对话')}》扮演“{speaker_name}”。\n"
             f"场景氛围: {scene.get('atmosphere', '')}\n"
@@ -230,13 +248,15 @@ class DialogueAgent(BaseAgent):
             f"补充背景: {scene_desc}\n"
             f"{user_identity}\n"
             f"多模态提示: {self._emotion_hint(multimodal)}\n"
+            f"{history_str}"
             f"用户刚说: {user_input}\n\n"
             "输出规则:\n"
             "1) 只输出NPC的一句话。\n"
             "2) 不要复述用户原话，不要出现引号包裹的用户台词。\n"
             "3) 不要输出角色名、旁白、系统提示。\n"
             "4) 句子要贴场景、可执行、有情绪分寸。\n"
-            f"5) 长度不超过{word_limit}字。"
+            "5) 结合之前的对话内容，保持对话连贯性。\n"
+            f"6) 长度不超过{word_limit}字。"
         )
 
     def _sanitize_model_reply(self, raw_text: str, user_input: str, speaker_name: str, max_chars: int) -> str:
@@ -346,6 +366,7 @@ class EvaluatorAgent(BaseAgent):
         user_input = context.get("user_input", "")
         prev = context.get("dominance", {"user": 50, "ai": 50})
         multimodal = context.get("multimodal", {})
+        conversation_history = context.get("conversation_history", [])
 
         scores = self._evaluate(user_input, multimodal)
         total = sum(scores[k] * w for k, w in self.EVAL_CRITERIA.items())

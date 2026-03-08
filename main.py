@@ -15,8 +15,19 @@ from fastapi.responses import HTMLResponse, Response
 import base64
 from pydantic import BaseModel
 from typing import List, Optional, Dict
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
 
 app = FastAPI(title="TalkArena")
+
+# 引入认证路由
+try:
+    from core.auth.auth_routes import router as auth_router
+    app.include_router(auth_router)
+    print("✓ 认证路由已加载")
+except Exception as e:
+    print(f"⚠ 认证路由加载失败：{e}")
 
 engine = None
 mm_analyzer = None
@@ -124,11 +135,15 @@ def get_engine():
 
             llm = LLMLoader()
             llm.load()
-            engine = TalkArenaEngine(llm, enable_tts=True)
+            engine = TalkArenaEngine(llm, enable_tts=True, use_unified_agent=True)
         except Exception as e:
             print(f"[Engine] 使用回退引擎，原因: {e}")
             engine = FallbackTalkArenaEngine()
     return engine
+
+
+class InterruptReq(BaseModel):
+    session_id: str
 
 
 def get_mm_analyzer():
@@ -170,6 +185,17 @@ class ScenarioGenerateReq(BaseModel):
     scene_type: str = "shandong_dinner"
     scene_name: str = "家庭饭桌试炼"
     only_characters: bool = False
+    banquet_level: Optional[str] = None
+
+
+class InterviewQuestionReq(BaseModel):
+    industry: str
+    position: str
+
+
+class ContentOptimizeReq(BaseModel):
+    content: str
+    scene_type: str
 
 
 @app.get("/favicon.ico")
@@ -211,37 +237,55 @@ async def start_session(req: SessionReq):
             user_info=req.user_info,
         )
 
-        session = eng.sessions[session_id]
-        opening = eng.multi_agent.agents_list[0].think(
-            {
-                "scenario_id": req.scenario_id,
-                "characters": req.characters or session["scenario"].get("characters", []),
-                "user_input": "",
-                "turn_count": 0,
-                "dominance": {"user": 50, "ai": 50},
-                "scene_description": req.scene_description,
-                "user_info": req.user_info,
-            }
-        )
+        if hasattr(eng, 'use_unified_agent') and eng.use_unified_agent:
+            for result in eng.process_turn(session_id, "", is_interrupt=False):
+                if result.stage == "complete":
+                    return {
+                        "success": True,
+                        "data": {
+                            "session_id": session_id,
+                            "is_unified_agent": True,
+                            "utterances": result.data.get("utterances", []),
+                            "should_await_user": result.data.get("should_await_user", True),
+                        },
+                    }
+        else:
+            session = eng.sessions[session_id]
+            opening = eng.multi_agent.agents_list[0].think(
+                {
+                    "scenario_id": req.scenario_id,
+                    "characters": req.characters or session["scenario"].get("characters", []),
+                    "user_input": "",
+                    "turn_count": 0,
+                    "dominance": {"user": 50, "ai": 50},
+                    "scene_description": req.scene_description,
+                    "user_info": req.user_info,
+                }
+            )
 
-        return {
-            "success": True,
-            "data": {
-                "session_id": session_id,
-                "opening": opening.content if opening else "",
-                "opening_speaker": opening.metadata.get("speaker") if opening else "",
-                "user_dominance": 50,
-                "ai_dominance": 50,
-                "features": {"multi_agent": True, "rag": True, "decision_engine": True},
-            },
-        }
+            return {
+                "success": True,
+                "data": {
+                    "session_id": session_id,
+                    "opening": opening.content if opening else "",
+                    "opening_speaker": opening.metadata.get("speaker") if opening else "",
+                    "user_dominance": 50,
+                    "ai_dominance": 50,
+                    "features": {"multi_agent": True, "rag": True, "decision_engine": True},
+                    "is_unified_agent": False,
+                },
+            }
+
+        return {"success": False, "error": "处理失败"}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 
 @app.post("/api/chat/send")
 async def send_msg(req: ChatReq):
-    if not req.session_id or not req.message:
+    if not req.session_id:
         return {"success": False, "error": "参数错误"}
 
     try:
@@ -254,7 +298,7 @@ async def send_msg(req: ChatReq):
     try:
         multimodal = req.multimodal or {}
         print(f"[API] 收到多模态数据: {multimodal}")
-        for result in eng.process_turn(req.session_id, req.message, multimodal):
+        for result in eng.process_turn(req.session_id, req.message, multimodal, is_interrupt=False):
             if result.stage == "complete":
                 return {"success": True, "data": result.data}
 
@@ -262,6 +306,54 @@ async def send_msg(req: ChatReq):
     except Exception as e:
         import traceback
 
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/chat/interrupt")
+async def interrupt_chat(req: InterruptReq):
+    if not req.session_id:
+        return {"success": False, "error": "参数错误"}
+
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    if req.session_id not in eng.sessions:
+        return {"success": False, "error": "会话不存在"}
+
+    try:
+        for result in eng.process_turn(req.session_id, "", is_interrupt=True):
+            if result.stage == "complete":
+                return {"success": True, "data": result.data}
+
+        return {"success": False, "error": "处理失败"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/chat/continue")
+async def continue_chat(req: InterruptReq):
+    if not req.session_id:
+        return {"success": False, "error": "参数错误"}
+
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    if req.session_id not in eng.sessions:
+        return {"success": False, "error": "会话不存在"}
+
+    try:
+        for result in eng.process_turn(req.session_id, "", is_interrupt=False):
+            if result.stage == "complete":
+                return {"success": True, "data": result.data}
+
+        return {"success": False, "error": "处理失败"}
+    except Exception as e:
+        import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
@@ -343,7 +435,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
     try:
         # 获取LLM实例
         eng = get_engine()
-        llm = eng.multi_agent.llm  # 假设engine包含LLM实例
+        llm = eng.llm
         
         # 根据场景类型生成不同的prompt
         if req.scene_type in ("shandong_dinner", "business_dinner"):
@@ -387,32 +479,32 @@ async def generate_scenario(req: ScenarioGenerateReq):
         elif req.scene_type == "interview":
             if req.only_characters:
                 prompt = f"""
-请为一场面试场景生成2-3个面试相关角色的详细信息，每个角色包括：
+请为一场群面竞争场景生成2-3个面试竞争者的详细信息，每个角色包括：
 - 姓名
-- 角色（如：面试官、HR、竞争者等）
+- 角色（都是面试竞争者）
 - 性格特点
 - 背景故事
 - 适合的emoji头像
 
 当前场景名称：{req.scene_name}
-请确保生成的内容符合职场面试场景，角色设定专业，背景故事合理。
+请确保生成的内容符合群面竞争场景，角色设定鲜明，是与用户同台竞争的应聘者。
 
 请以JSON格式输出，包含以下字段：
 - characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
 """
             else:
                 prompt = f"""
-请为一场面试场景生成以下内容：
-1. 详细的场景背景描述（2-3句话），包括公司类型、面试岗位、面试目的
-2. 2-3个面试相关角色的详细信息，每个角色包括：
+请为一场群面竞争场景生成以下内容：
+1. 详细的场景背景描述（2-3句话），包括公司类型、面试岗位、群面形式
+2. 2-3个面试竞争者的详细信息，每个角色包括：
    - 姓名
-   - 角色（如：面试官、HR、竞争者等）
+   - 角色（都是面试竞争者）
    - 性格特点
    - 背景故事
    - 适合的emoji头像
 
 当前场景名称：{req.scene_name}
-请确保生成的内容符合职场面试场景，角色设定专业，背景故事合理。
+请确保生成的内容符合群面竞争场景，角色设定鲜明，是与用户同台竞争的应聘者。
 
 请以JSON格式输出，包含以下字段：
 - description: 场景描述
@@ -513,6 +605,263 @@ async def generate_scenario(req: ScenarioGenerateReq):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/scenario/regenerate")
+async def regenerate_scenario(req: ScenarioGenerateReq):
+    """重新生成场景设定（覆盖当前编辑内容）"""
+    try:
+        # 获取 LLM 实例
+        eng = get_engine()
+        llm = eng.llm
+        
+        # 使用与 generate_scenario 相同的逻辑，但添加随机性确保不同结果
+        if req.scene_type in ("shandong_dinner", "business_dinner"):
+            # 根据酒局等级构建不同的prompt
+            banquet_level_context = ""
+            if req.scene_type == "business_dinner" and req.banquet_level:
+                if req.banquet_level == "formal":
+                    banquet_level_context = """
+酒局等级：正式商务宴请
+特点：高端酒店包间，精心布置的餐桌，双方高层悉数到场。这是礼仪性资源展示，信任建立的前置仪式。着装正式，举止得体，言谈谨慎而有分量。酒过三巡后才逐渐进入正题，重点在建立关系、展示诚意，为后续合作铺路。
+"""
+                elif req.banquet_level == "informal":
+                    banquet_level_context = """
+酒局等级：非正式摸底
+特点：装修雅致的私房菜餐厅，氛围相对轻松。双方试探，话里有话。看似随意的闲聊中暗藏机锋，每一个话题都可能是在打探底线。不需要过于正式，但要时刻保持警觉，听懂弦外之音，同时巧妙地传递自己的立场。
+"""
+                elif req.banquet_level == "truth":
+                    banquet_level_context = """
+酒局等级：酒后吐真言
+特点：酒过数巡，氛围变得热烈而直接。高压下的情感博弈，测试忠诚度。酒精卸下了部分伪装，话语开始变得尖锐和真实。这是考验彼此信任和底线的时刻，需要在保持清醒的同时，应对各种情感和利益的考验。
+"""
+                elif req.banquet_level == "street":
+                    banquet_level_context = """
+酒局等级：深夜大排档
+特点：霓虹灯闪烁的街头，塑料板凳，冰镇啤酒。卸下伪装，进行最后的利益交换。没有了办公室的繁文缛节，大家都露出了最真实的一面。这是敲定最终细节的时刻，直接、务实、不绕弯子，但也要守住自己的核心利益。
+"""
+            
+            if req.scene_type == "business_dinner" and req.banquet_level:
+                prompt = f"""
+请为一场商务饭局谈判场景生成以下内容：
+1. 详细的场景背景描述（2-3 句话），包括时间、地点、目的和氛围
+2. 3 个饭桌成员的详细信息，每个成员包括：
+   - 姓名
+   - 角色（如：甲方负责人、乙方商务、风险顾问等）
+   - 性格特点
+   - 背景故事
+   - 适合的 emoji 头像
+3. 用户身份信息，用户身份应符合商务场景，例如：部门新人、项目经理、商务代表等
+
+{banquet_level_context}
+
+当前场景名称：{req.scene_name}
+请确保生成的内容完全符合上述酒局等级的特点，角色设定合理，背景故事生动。
+注意：请生成与之前不同的场景设定，包括不同的场景描述和角色配置。
+
+请以 JSON 格式输出，包含以下字段：
+- description: 场景描述
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
+- user_identity: 用户身份信息，包含 name、role、personality、background、avatar 字段
+"""
+            else:
+                prompt = f"""
+请为一场山东饭桌场景生成以下内容：
+1. 详细的场景背景描述（2-3 句话），包括时间、地点、目的和氛围
+2. 3 个饭桌成员的详细信息，每个成员包括：
+   - 姓名
+   - 角色（如：长辈、晚辈、同事等）
+   - 性格特点
+   - 背景故事
+   - 适合的 emoji 头像
+3. 用户身份信息，用户身份应符合年轻人群体，例如：晚辈、年轻人、刚工作的新人等
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合山东酒桌文化特点，角色设定合理，背景故事生动。
+注意：请生成与之前不同的场景设定，包括不同的场景描述和角色配置。
+
+请以 JSON 格式输出，包含以下字段：
+- description: 场景描述
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
+- user_identity: 用户身份信息，包含 name、role、personality、background、avatar 字段
+"""
+        elif req.scene_type == "interview":
+            prompt = f"""
+请为一场面试场景生成以下内容：
+1. 详细的场景背景描述（2-3 句话），包括公司类型、面试岗位、面试目的
+2. 2-3 个面试相关角色的详细信息，每个角色包括：
+   - 姓名
+   - 角色（如：面试官、HR、竞争者等）
+   - 性格特点
+   - 背景故事
+   - 适合的 emoji 头像
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合职场面试场景，角色设定专业，背景故事合理。
+注意：请生成与之前不同的场景设定。
+
+请以 JSON 格式输出，包含以下字段：
+- description: 场景描述
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
+"""
+        elif req.scene_type == "debate":
+            prompt = f"""
+请为一场辩论场景生成以下内容：
+1. 详细的场景背景描述（2-3 句话），包括辩论主题、辩论形式、参与人员
+2. 3 个辩论相关角色的详细信息，每个角色包括：
+   - 姓名
+   - 角色（如：正方辩手、反方辩手、主持人等）
+   - 性格特点
+   - 背景故事
+   - 适合的 emoji 头像
+
+当前场景名称：{req.scene_name}
+请确保生成的内容符合辩论场景特点，角色设定鲜明，背景故事合理。
+注意：请生成与之前不同的场景设定。
+
+请以 JSON 格式输出，包含以下字段：
+- description: 场景描述
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
+"""
+        else:
+            return {"success": False, "error": "不支持的场景类型"}
+        
+        # 调用 LLM 生成内容，使用更高的 temperature 增加多样性
+        response = llm.generate(prompt, max_new_tokens=1500, temperature=0.9)
+        
+        # 解析 JSON 响应
+        import json
+        try:
+            start_idx = response.find('{')
+            end_idx = response.rfind('}') + 1
+            
+            if start_idx != -1 and end_idx != -1:
+                json_str = response[start_idx:end_idx]
+                result = json.loads(json_str)
+                
+                if "description" in result and "characters" in result:
+                    response_data = {
+                        "description": result["description"],
+                        "characters": result["characters"]
+                    }
+                    if "user_identity" in result:
+                        response_data["user_identity"] = result["user_identity"]
+                    return {
+                        "success": True,
+                        "data": response_data
+                    }
+                else:
+                    return {"success": False, "error": "生成的内容格式不正确"}
+            else:
+                return {"success": False, "error": "无法找到 JSON 内容"}
+        except json.JSONDecodeError as e:
+            print(f"JSON 解析错误：{e}")
+            return {"success": False, "error": "无法解析生成的内容"}
+        except Exception as e:
+            print(f"解析过程中出现错误：{e}")
+            return {"success": False, "error": "解析过程中出现错误"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/interview/generate_question")
+async def generate_interview_question(req: InterviewQuestionReq):
+    """根据行业和岗位生成专业的群面问题"""
+    try:
+        eng = get_engine()
+        llm = eng.llm
+        
+        prompt = f"""请为{req.industry}行业的{req.position}岗位设计一个专业的群面面试问题。
+
+要求：
+1. 问题应该真实、专业，符合该行业和岗位的实际工作场景
+2. 问题应该具有一定的挑战性，能够考察候选人的综合能力
+3. 问题应该适合群面环境，让多个候选人可以同时回答并展开讨论
+4. 问题长度控制在100-200字之间
+5. 不要包含任何格式说明或额外解释，只输出问题本身
+
+请直接输出面试问题："""
+        
+        response = llm.generate(prompt, max_new_tokens=300, temperature=0.8)
+        
+        question = response.strip()
+        if not question:
+            question = f"请分享一个你在{req.industry}行业做{req.position}相关工作的经历，说明你遇到的最大挑战和解决方案。"
+        
+        return {"success": True, "data": {"question": question}}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/content/optimize")
+async def optimize_content(req: ContentOptimizeReq):
+    """AI优化场景描述或面试问题"""
+    try:
+        eng = get_engine()
+        llm = eng.llm
+        
+        if req.scene_type == "family":
+            prompt = f"""请优化以下家庭饭桌场景的背景描述：
+
+{req.content}
+
+要求：
+1. 保持原有的核心信息和场景设定
+2. 让描述更加生动、具体、有画面感
+3. 增加一些细节，让场景更加真实可信
+4. 语言要自然流畅，符合中文表达习惯
+5. 优化后的内容长度在150-300字之间
+6. 只输出优化后的内容，不要包含任何解释或格式说明"""
+        elif req.scene_type == "business":
+            prompt = f"""请优化以下商务饭局场景的背景描述：
+
+{req.content}
+
+要求：
+1. 保持原有的核心信息和场景设定
+2. 让描述更加专业、商务、有氛围感
+3. 增加一些商务细节，让场景更加真实可信
+4. 语言要正式得体，符合商务场合
+5. 优化后的内容长度在150-300字之间
+6. 只输出优化后的内容，不要包含任何解释或格式说明"""
+        elif req.scene_type == "interview":
+            prompt = f"""请优化以下群面面试问题：
+
+{req.content}
+
+要求：
+1. 保持原有的核心问题和考察点
+2. 让问题更加清晰、专业、有挑战性
+3. 问题应该适合群面环境，让多个候选人可以同时回答
+4. 语言要专业、准确、有条理
+5. 优化后的问题长度在100-250字之间
+6. 只输出优化后的问题，不要包含任何解释或格式说明"""
+        else:
+            prompt = f"""请优化以下内容：
+
+{req.content}
+
+要求：
+1. 保持原有的核心信息
+2. 让描述更加生动、具体
+3. 语言要自然流畅
+4. 只输出优化后的内容"""
+        
+        response = llm.generate(prompt, max_new_tokens=400, temperature=0.7)
+        
+        optimized_content = response.strip()
+        if not optimized_content:
+            optimized_content = req.content
+        
+        return {"success": True, "data": {"optimized_content": optimized_content}}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/scenarios/list")
 async def list_scenarios():
     """获取可用场景列表（精简为4个高质量场景）"""
@@ -535,11 +884,11 @@ async def list_scenarios():
         },
         {
             "id": "interview",
-            "name": "高压结构化面试",
+            "name": "群面竞争场",
             "category": "interview",
-            "description": "结论先行、证据支撑、压力追问",
+            "description": "同台竞技、展现优势、团队合作",
             "icon": "💼",
-            "sub_scenes": ["高压结构化面试"],
+            "sub_scenes": ["群面竞争场"],
         },
         {
             "id": "debate",
@@ -608,6 +957,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .ma{font-size:48px;margin-bottom:10px}
 .mn{font-weight:bold;font-size:16px;margin-bottom:8px;color:#333}
 .mr{font-size:13px;color:#666;margin-top:5px}
+.mc-tooltip{position:relative}
+#customTooltip{position:fixed;background:#333;color:#fff;padding:12px 16px;border-radius:8px;font-size:13px;white-space:pre-wrap;max-width:400px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.25);pointer-events:none;display:none;line-height:1.6}
+#customTooltip.visible{display:block}
+
 
 .ab{display:flex;gap:18px;justify-content:center;margin-top:35px}
 .btn2{padding:12px 25px;background:#fff;border:2px solid #E5E7EB;border-radius:10px;cursor:pointer;font-size:14px;transition:all .2s}
@@ -621,7 +974,7 @@ select{background:#fff;border:2px solid #E5E7EB;border-radius:8px;padding:10px;f
 select:focus{outline:none;border-color:#667eea}
 
 #p3{background:#F8FAFC;height:100vh}
-.ch{background:#fff;padding:14px 20px;border-bottom:1px solid #E2E8F0;display:flex;justify-content:space-between;align-items:center}
+.ch{background:#fff;padding:14px 20px;border-bottom:1px solid #E2E8F0;display:flex;justify-content:space-between;align-items:center;position:relative;z-index:200}
 .hl{display:flex;align-items:center;gap:25px}
 .bb{padding:8px 16px;background:#4A90E2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
 .sd{display:flex;gap:25px;background:#f8f9fa;padding:10px 20px;border-radius:10px}
@@ -633,6 +986,15 @@ select:focus{outline:none;border-color:#667eea}
 .hr{display:flex;gap:10px}
 .rb{padding:8px 16px;background:#5B6BF9;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
 .eb{padding:8px 16px;background:#D32F2F;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+.ib{padding:8px 16px;background:#FF9800;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+
+.rescue-fab{position:fixed;right:30px;bottom:120px;width:70px;height:70px;border-radius:50%;background:linear-gradient(135deg,#5B6BF9,#7C8CFF);color:#fff;border:none;cursor:pointer;font-size:14px;font-weight:700;box-shadow:0 8px 25px rgba(91,107,249,.4);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:all .3s}
+.rescue-fab:hover{transform:translateY(-3px) scale(1.05);box-shadow:0 12px 35px rgba(91,107,249,.5)}
+.rescue-fab:active{transform:translateY(-1px) scale(1.02)}
+
+.interrupt-fab{position:fixed;right:30px;bottom:210px;width:70px;height:70px;border-radius:50%;background:linear-gradient(135deg,#FF9800,#FFB74D);color:#fff;border:none;cursor:pointer;font-size:14px;font-weight:700;box-shadow:0 8px 25px rgba(255,152,0,.4);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:all .3s}
+.interrupt-fab:hover{transform:translateY(-3px) scale(1.05);box-shadow:0 12px 35px rgba(255,152,0,.5)}
+.interrupt-fab:active{transform:translateY(-1px) scale(1.02)}
 
 .cm{flex:1;display:flex;overflow:hidden}
 
@@ -679,7 +1041,10 @@ select:focus{outline:none;border-color:#667eea}
 .ct2{font-size:14px;color:#333}
 
 .ia{background:#6495ED;border-radius:28px;padding:10px 18px;display:flex;align-items:center;gap:12px;box-shadow:0 4px 15px rgba(100,149,237,.3)}
-.mb{background:transparent;border:none;font-size:22px;cursor:pointer}
+.mb{background:transparent;border:none;font-size:22px;cursor:pointer;transition:all .2s;position:relative;border-radius:50%;width:40px;height:40px;display:flex;align-items:center;justify-content:center}
+.mb:hover{transform:scale(1.1);background:rgba(255,255,255,.2)}
+.mb.active{background:#C8102E !important;box-shadow:0 0 15px rgba(200,16,46,.5)}
+
 .ci2{flex:1;background:transparent;border:none;color:#fff;font-size:16px;outline:none}
 .ci2::placeholder{color:rgba(255,255,255,.7)}
 .sb{background:#fff;color:#6495ED;border:none;padding:8px 22px;border-radius:16px;cursor:pointer;font-weight:bold;font-size:14px;transition:all .2s}
@@ -719,10 +1084,11 @@ select:focus{outline:none;border-color:#667eea}
 .bar-bg{width:100%;height:8px;background:#E2E8F0;border-radius:4px;overflow:hidden}
 .bar-fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:4px;transition:width .3s}
 
-.mp{width:200px;background:#fff;border-left:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column}
+.mp{width:200px;background:#fff;border-left:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column;position:absolute;right:0;top:68px;bottom:0;transform:translateX(100%);transition:transform .3s ease;z-index:50}
+.mp.visible{transform:translateX(0)}
 .mp .mt{font-size:13px;color:#333;font-weight:bold;text-align:center;margin-bottom:12px}
 .mp .cam-preview{width:100%;aspect-ratio:4/3;background:#1a1a1a;border-radius:10px;overflow:hidden;margin-bottom:12px;position:relative}
-.mp .cam-preview video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block}
+.mp .cam-preview video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:none}
 .mp .cam-placeholder{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#666;font-size:11px}
 .mp .cam-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#666;font-size:11px}
 .mp select{width:100%;padding:8px;font-size:12px;border:1px solid #E5E7EB;border-radius:6px;margin-bottom:8px;background:#fff}
@@ -737,8 +1103,54 @@ select:focus{outline:none;border-color:#667eea}
 .mp .vol-segment.active{background:#22c55e;box-shadow:0 0 8px #22c55e}
 .mp .vol-label{font-size:11px;color:#666;text-align:center}
 
+.pressure-section-wrapper{margin-top:10px;margin-bottom:10px}
+.pressure-header-row{display:flex;align-items:center;justify-content:space-between;margin-top:25px;margin-bottom:10px}
+.pressure-container{display:flex;gap:20px;align-items:flex-start;margin-top:10px;margin-bottom:10px}
+.pressure-tags{display:flex;gap:10px;flex-wrap:wrap;flex:1}
+.pressure-tag{padding:12px 20px;background:#fff;border:2px solid #E2E8F0;border-radius:16px;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:#333}
+.pressure-tag:hover{border-color:#667eea;background:#f0f3ff}
+.pressure-tag.selected{border-color:#667eea;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;box-shadow:0 4px 15px rgba(102,126,234,.3)}
+
+.pressure-slider::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);cursor:pointer;box-shadow:0 2px 8px rgba(102,126,234,.4);transition:transform .2s}
+.pressure-slider::-webkit-slider-thumb:hover{transform:scale(1.1)}
+.pressure-slider::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);cursor:pointer;border:none;box-shadow:0 2px 8px rgba(102,126,234,.4)}
+
+.banquet-level-wrapper{margin-top:10px;margin-bottom:10px}
+.banquet-level-tags{display:flex;gap:10px;flex-wrap:wrap}
+.banquet-level-tag{padding:14px 24px;background:#fff;border:2px solid #E2E8F0;border-radius:16px;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;color:#333;position:relative}
+.banquet-level-tag:hover{border-color:#667eea;background:#f0f3ff;transform:translateY(-2px);box-shadow:0 4px 12px rgba(102,126,234,.15)}
+.banquet-level-tag.selected{border-color:#667eea;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;box-shadow:0 4px 15px rgba(102,126,234,.3);transform:translateY(-2px)}
+
+.drinking-capacity-stars{display:flex;gap:8px;align-items:center}
+.drinking-capacity-stars .star{font-size:40px;cursor:pointer;transition:all .15s;color:#ddd;user-select:none;line-height:1}
+.drinking-capacity-stars .star:hover{transform:scale(1.15)}
+.drinking-capacity-stars .star.filled{color:#ffd700;text-shadow:0 2px 8px rgba(255,215,0,.4)}
+
+.interview-info-wrapper{margin-top:10px;margin-bottom:10px}
+.interview-tags{display:flex;gap:10px;flex-wrap:wrap}
+.interview-tag{padding:12px 22px;background:#fff;border:2px solid #E2E8F0;border-radius:14px;cursor:pointer;transition:all .2s;font-size:14px;font-weight:600;color:#333}
+.interview-tag:hover{border-color:#667eea;background:#f0f3ff}
+.interview-tag.selected{border-color:#667eea;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;box-shadow:0 4px 15px rgba(102,126,234,.3)}
+
+.confirm-edit-btn{padding:10px 24px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;transition:all .2s;box-shadow:0 4px 12px rgba(102,126,234,.3)}
+.confirm-edit-btn:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(102,126,234,.4)}
+.confirm-edit-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
+
+.ai-optimize-btn{padding:10px 20px;background:transparent;color:#333;border:2px solid #E2E8F0;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;transition:all .2s}
+.ai-optimize-btn:hover{border-color:#667eea;background:#f0f3ff;color:#667eea}
+.ai-optimize-btn:disabled{opacity:.6;cursor:not-allowed}
+
+.interview-question-box{background:#fff;border:2px solid #667eea;border-radius:16px;padding:16px;margin-bottom:16px;box-shadow:0 4px 12px rgba(102,126,234,.15)}
+.interview-question-content{font-size:15px;color:#333;line-height:1.6;max-height:96px;overflow-y:auto;transition:max-height .3s ease}
+.interview-question-content.collapsed{max-height:24px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.interview-question-toggle{display:flex;justify-content:center;align-items:center;margin-top:12px;cursor:pointer}
+.interview-question-toggle span{display:inline-block;font-size:18px;color:#667eea;transition:transform .3s ease}
+.interview-question-toggle:hover span{transform:scale(1.2)}
+.interview-question-toggle.collapsed span{transform:rotate(180deg)}
+.interview-question-toggle.collapsed:hover span{transform:rotate(180deg) scale(1.2)}
+
 #p4{background:#2c313c;padding:40px;justify-content:center;align-items:center}
-.rc{background:#fff;border-radius:20px;padding:40px;max-width:550px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.rc{background:#fff;border-radius:20px;padding:40px;max-width:1400px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3)}
 .rt{text-align:center;font-size:26px;font-weight:bold;margin-bottom:20px;color:#333}
 .md{text-align:center;font-size:80px;margin:20px 0}
 .sg2{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin:25px 0}
@@ -759,8 +1171,9 @@ select:focus{outline:none;border-color:#667eea}
 #p3 #cl{display:flex;flex-direction:column;gap:12px}
 #p3 .ci{display:flex;align-items:center;gap:14px;padding:14px;background:linear-gradient(160deg,#ffffff 0%,#f5f9ff 100%);border:1px solid #d9e5fb;border-radius:18px;box-shadow:0 6px 20px rgba(39,76,153,.12);position:relative;overflow:hidden}
 #p3 .ci::before{content:'';position:absolute;left:0;top:0;bottom:0;width:5px;background:#b8c9ea}
-#p3 .ci.state-speaking{border-color:#ffb36a;box-shadow:0 8px 26px rgba(255,139,0,.28)}
-#p3 .ci.state-speaking::before{background:#ff8b00}
+#p3 .ci.state-speaking{border-color:#C8102E;box-shadow:0 10px 30px rgba(200,16,46,.35),0 0 0 3px rgba(200,16,46,.15)}
+#p3 .ci.state-speaking::before{background:#C8102E;width:6px}
+#p3 .ci.state-speaking .avatar-main{transform:scale(1.08);filter:drop-shadow(0 3px 5px rgba(200,16,46,.35))}
 #p3 .ci.state-reacting::before{background:#5e9dff}
 #p3 .ci.state-listening::before{background:#39a96b}
 #p3 .ci .head{width:68px;height:68px;border-radius:20px;background:linear-gradient(160deg,#ecf2ff 0%,#dae8ff 100%);border:1px solid #c5d9ff;box-shadow:inset 0 -8px 14px rgba(66,104,174,.18),0 5px 12px rgba(15,23,42,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative}
@@ -792,11 +1205,13 @@ select:focus{outline:none;border-color:#667eea}
 </style>
 </head>
 <body>
+<!-- 登录/注册按钮 -->
+<button id="loginBtn" class="login-btn" onclick="openAuthModal()" style="position:absolute;top:20px;right:20px;padding:10px 20px;background:#C8102E;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;z-index:9999;">登录/注册</button>
 <div id="p1" class="page active">
 <div class="hero">
-<div class="logo">🍺</div>
-<div class="title">山东人的饭桌</div>
-<div class="sub">AI驱动的酒桌情商实战训练平台</div>
+<div class="logo">🎯</div>
+<div class="title">表达训练营</div>
+<div class="sub">AI驱动的口语表达实战训练平台</div>
 <div class="tech-badges">
 <span class="badge">Multi-Agent协同</span>
 <span class="badge rag">RAG知识增强</span>
@@ -814,18 +1229,112 @@ select:focus{outline:none;border-color:#667eea}
 </div>
 
 <div id="p2" class="page">
-<div class="cfg-title">山东人的饭桌</div>
-<div class="cfg-sub">选择你的饭局战场</div>
+<div class="cfg-title">表达训练营</div>
+<div class="cfg-sub">选择你的训练场</div>
 <div class="section-l">选择场景</div>
 <div class="sg" id="sg"></div>
 <div class="ab" style="margin-top:20px;margin-bottom:20px;">
-<button class="btn2" id="sceneGenBtn" onclick="regenerateScene()">新增场景时生成背景信息</button>
+<button class="btn2" id="sceneGenBtn" onclick="regenerateScene()" disabled>🔄 重新生成场景设定</button>
 </div>
-<div class="section-l" id="sceneInfoSection" style="display:none;">场景信息 <span style="font-size:12px;color:#667eea;cursor:pointer;" onclick="toggleSceneEdit()">✏️ 编辑</span></div>
+
+<div class="banquet-level-wrapper" id="banquetLevelWrapper" style="display:none;">
+  <div class="banquet-level-row" style="display:flex;align-items:flex-end;justify-content:space-between;gap:30px;">
+    <div class="banquet-level-section" style="flex:1;">
+      <div class="section-l" style="margin-top:25px;margin-bottom:10px;">酒局等级</div>
+      <div class="banquet-level-tags" id="banquetLevelTags">
+        <div class="banquet-level-tag mc-tooltip selected" data-level="formal" onclick="selectBanquetLevel(this)" data-tooltip="礼仪性资源展示，信任建立的前置仪式">
+          🍽️ 正式商务宴请
+        </div>
+        <div class="banquet-level-tag mc-tooltip" data-level="informal" onclick="selectBanquetLevel(this)" data-tooltip="双方试探，话里有话">
+          🤝 非正式摸底
+        </div>
+        <div class="banquet-level-tag mc-tooltip" data-level="truth" onclick="selectBanquetLevel(this)" data-tooltip="高压下的情感博弈，测试忠诚度">
+          🍻 酒后吐真言
+        </div>
+        <div class="banquet-level-tag mc-tooltip" data-level="street" onclick="selectBanquetLevel(this)" data-tooltip="卸下伪装，进行最后的利益交换">
+          🍜 深夜大排档
+        </div>
+      </div>
+    </div>
+    <div class="drinking-capacity-section" style="display:flex;flex-direction:column;align-items:flex-end;">
+      <div class="section-l" style="margin-top:25px;margin-bottom:10px;">我的酒量</div>
+      <div class="drinking-capacity-stars" id="drinkingCapacityStars">
+        <span class="star" data-index="0" onclick="setDrinkingCapacity(1)">☆</span>
+        <span class="star" data-index="1" onclick="setDrinkingCapacity(2)">☆</span>
+        <span class="star" data-index="2" onclick="setDrinkingCapacity(3)">☆</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="interview-info-wrapper" id="interviewInfoWrapper" style="display:none;">
+  <div class="section-l" style="margin-top:25px;margin-bottom:10px;">面试岗位</div>
+  
+  <div class="interview-row" style="display:flex;align-items:center;gap:15px;margin-bottom:15px;">
+    <span style="font-size:14px;font-weight:600;color:#333;min-width:50px;">行业</span>
+    <div class="interview-tags" id="industryTags">
+      <div class="interview-tag selected" data-value="互联网" onclick="selectIndustry(this)">互联网</div>
+      <div class="interview-tag" data-value="金融" onclick="selectIndustry(this)">金融</div>
+      <div class="interview-tag" data-value="快消" onclick="selectIndustry(this)">快消</div>
+      <div class="interview-tag" data-value="咨询" onclick="selectIndustry(this)">咨询</div>
+      <div class="interview-tag" data-value="自定义" onclick="selectIndustry(this)">自定义</div>
+    </div>
+    <input type="text" id="customIndustryInput" placeholder="请输入行业" oninput="updateInterviewQuestion()" style="display:none;width:180px;padding:10px 15px;border:2px solid #667eea;border-radius:12px;font-size:14px;outline:none;">
+  </div>
+  
+  <div class="interview-row" style="display:flex;align-items:center;gap:15px;">
+    <span style="font-size:14px;font-weight:600;color:#333;min-width:50px;">岗位</span>
+    <div class="interview-tags" id="positionTags">
+      <div class="interview-tag selected" data-value="产品" onclick="selectPosition(this)">产品</div>
+      <div class="interview-tag" data-value="销售" onclick="selectPosition(this)">销售</div>
+      <div class="interview-tag" data-value="市场" onclick="selectPosition(this)">市场</div>
+      <div class="interview-tag" data-value="分析" onclick="selectPosition(this)">分析</div>
+      <div class="interview-tag" data-value="自定义" onclick="selectPosition(this)">自定义</div>
+    </div>
+    <input type="text" id="customPositionInput" placeholder="请输入岗位" oninput="updateInterviewQuestion()" style="display:none;width:180px;padding:10px 15px;border:2px solid #667eea;border-radius:12px;font-size:14px;outline:none;">
+  </div>
+</div>
+
+<div class="section-l" id="sceneInfoSection" style="display:none;">
+  <span id="sceneInfoTitle">背景信息</span>
+  <span style="font-size:12px;color:#667eea;cursor:pointer;" onclick="toggleSceneEdit()">✏️ 编辑</span>
+  <button class="btn2" id="aiCustomizeBtn" onclick="generateCustomInterviewQuestion()" style="display:none;padding:8px 16px;font-size:13px;float:right;">🤖 AI定制</button>
+</div>
 <div class="scene-description" id="sceneDescription" style="display:none;background:#f8f9fa;border-radius:10px;padding:15px;margin:10px 0;border-left:4px solid #667eea;">
   <div id="sceneDescriptionText" style="font-size:14px;color:#333;line-height:1.5;"></div>
-  <textarea id="sceneDescriptionEdit" style="display:none;width:100%;min-height:100px;border:1px solid #ddd;border-radius:5px;padding:10px;font-size:14px;color:#333;line-height:1.5;resize:vertical;"></textarea>
+  <div id="sceneEditWrapper" style="display:none;">
+    <textarea id="sceneDescriptionEdit" style="width:100%;min-height:100px;border:1px solid #ddd;border-radius:5px;padding:10px;font-size:14px;color:#333;line-height:1.5;resize:vertical;"></textarea>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:10px 0 0 0;">
+      <button class="ai-optimize-btn" id="aiOptimizeBtn" onclick="aiOptimizeContent()">🌟 AI优化</button>
+      <button class="confirm-edit-btn" id="confirmEditBtn" onclick="confirmSceneEdit()">确认</button>
+    </div>
+  </div>
 </div>
+<div class="pressure-section-wrapper" id="pressureSectionWrapper" style="display:none;">
+  <div class="pressure-header-row" style="display:flex;align-items:center;justify-content:space-between;margin-top:25px;margin-bottom:10px;">
+    <div class="section-l" style="margin:0;">压力敏感区 <span style="font-size:12px;color:#667eea;">可选填</span></div>
+    <div class="pressure-value-box" id="pressureValueBox" style="display:flex;align-items:center;gap:10px;background:#f8f9fa;border-radius:12px;padding:8px 15px;border:1px solid #E2E8F0;">
+      <span style="font-size:13px;font-weight:600;color:#333;white-space:nowrap;">压力值</span>
+      <span style="font-size:12px;color:#666;font-weight:600;">0</span>
+      <input type="range" id="pressureSlider" min="0" max="10" value="5" class="pressure-slider" oninput="updatePressureValue(this.value)" style="width:120px;height:6px;border-radius:3px;background:#E2E8F0;outline:none;-webkit-appearance:none;">
+      <span style="font-size:12px;color:#666;font-weight:600;">10</span>
+      <span id="pressureDisplay" style="font-size:22px;font-weight:bold;color:#667eea;min-width:28px;text-align:center;">5</span>
+    </div>
+  </div>
+  <div class="pressure-container" id="pressureContainer" style="display:flex;">
+    <div class="pressure-tags" id="pressureTags">
+      <div class="pressure-tag" data-tag="催婚" onclick="selectPressureTag(this)">💒 催婚</div>
+      <div class="pressure-tag" data-tag="催育" onclick="selectPressureTag(this)">👶 催育</div>
+      <div class="pressure-tag" data-tag="工作" onclick="selectPressureTag(this)">💼 工作</div>
+      <div class="pressure-tag" data-tag="学业" onclick="selectPressureTag(this)">📚 学业</div>
+      <div class="pressure-tag" data-tag="自定义" onclick="selectPressureTag(this)">✏️ 自定义</div>
+    </div>
+  </div>
+</div>
+<div class="custom-pressure-input" id="customPressureInput" style="display:none;margin-top:10px;">
+  <input type="text" id="customPressureText" placeholder="请输入自定义压力话题..." style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;font-size:14px;">
+</div>
+
 <div class="section-l" id="memberSection" style="display:none;">饭局成员 <span class="ai-tag">AI智能分配</span></div>
 <div class="mg" id="mg" style="display:none;"></div>
 <div class="ab" id="actionButtons" style="display:none;">
@@ -837,14 +1346,13 @@ select:focus{outline:none;border-color:#667eea}
 <div id="p3" class="page">
 <div class="ch">
 <div class="hl">
-<button class="bb" onclick="show('p1')">返回</button>
+<button class="bb" onclick="goBackFromGame()">返回</button>
 <div class="sd">
 <div class="si"><span class="sla">你的气场</span><span class="sv u" id="us">50</span></div>
 <div class="si"><span class="sla">AI气场</span><span class="sv a" id="as">50</span></div>
 </div>
 </div>
 <div class="hr">
-<button class="rb" onclick="rescue()">救场</button>
 <button class="eb" onclick="end()">结束</button>
 </div>
 </div>
@@ -866,43 +1374,35 @@ select:focus{outline:none;border-color:#667eea}
 </div>
 </div>
 <div class="cc">
+<div id="interviewQuestionBox" class="interview-question-box" style="display:none;">
+  <div id="interviewQuestionContent" class="interview-question-content"></div>
+  <div class="interview-question-toggle" onclick="toggleInterviewQuestionBox()">
+    <span id="toggleArrow">▼</span>
+  </div>
+</div>
 <div class="mc2" id="mc2"></div>
 <div class="cb" id="cb" style="display:none"><span class="cb-icon">💡</span><span class="ct2" id="ct2"></span></div>
 <div class="ia">
-<button class="mb" onclick="toggleM()">🎙️</button>
-<input class="ci2" id="ci2" placeholder="输入消息..." onkeypress="if(event.key==='Enter')send()">
+<button class="mb" onclick="toggleCameraPanel()">📷</button>
+<button class="mb" id="micInputBtn" onclick="toggleM()">🎙️</button>
+<input class="ci2" id="ci2" placeholder="输入消息..." onkeypress="if(event.key==='Enter')send()" autocomplete="off" name="message_input">
 <button class="sb" onclick="send()">发送</button>
 </div>
 </div>
-<div class="mp">
+<div class="mp" id="monitorPanel">
 <div class="mt">🎥 摄像头监控</div>
 <div class="cam-preview" id="camPreview">
 <div class="cam-placeholder" id="camPlaceholder">摄像头未开启</div>
-<video id="camVideo" autoplay muted playsinline style="display:none"></video>
+<video id="camVideo" autoplay muted playsinline"></video>
 </div>
 <select id="camSelect"><option value="">📷 选择摄像头</option></select>
 <button id="cmb" onclick="toggleC()">📷 开启摄像头</button>
-<button id="mmb" onclick="toggleM2()">🎤 开启麦克风</button>
-<select id="micSelect"><option value="">🎤 选择麦克风</option></select>
-<div class="vol-bar" id="volBar">
-<div class="vol-segment" id="vs1"></div>
-<div class="vol-segment" id="vs2"></div>
-<div class="vol-segment" id="vs3"></div>
-<div class="vol-segment" id="vs4"></div>
-<div class="vol-segment" id="vs5"></div>
-<div class="vol-segment" id="vs6"></div>
-<div class="vol-segment" id="vs7"></div>
-<div class="vol-segment" id="vs8"></div>
-<div class="vol-segment" id="vs9"></div>
-<div class="vol-segment" id="vs10"></div>
-</div>
-<div class="vol-label" id="volLabel">麦克风音量</div>
 <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
 <div style="text-align:center;padding:8px;background:#f8f9fa;border-radius:8px"><span id="ei">❓</span><div style="font-size:10px;color:#666;margin-top:2px">表情</div><div id="et" style="font-size:11px;color:#333">未检测</div></div>
-<div style="text-align:center;padding:8px;background:#f8f9fa;border-radius:8px"><span id="vi">❓</span><div style="font-size:10px;color:#666;margin-top:2px">语音</div><div id="vt" style="font-size:11px;color:#333">未检测</div></div>
 </div>
 </div>
-</div>
+<button class="interrupt-fab" id="interruptBtn" onclick="interrupt()" style="display:none;">⏸️ 打断</button>
+<button class="rescue-fab" onclick="rescue()">💡 救场</button>
 </div>
 
 <div id="p4" class="page"><div class="rc" id="rc"></div></div>
@@ -910,10 +1410,17 @@ select:focus{outline:none;border-color:#667eea}
 <script>
 let sid=null,scene='家庭饭桌试炼',mems=[],chars=[],hist=[],cam=null,mic=null,isC=0,isM=0;
 let selectedScenarioId='shandong_dinner';
+let selectedPressureTags=[];
+let pressureValue=5;
 let emotionData={confidence:50,calm:50,nervous:20,focus:50};
 let emotionInterval=null;
 let talkingHeadTimer=null,lastVoiceLevel=0,lastSpeaker='';
 const npcRenderState={};
+let isFirstCameraClick=true;
+let isFirstMicClick=true;
+let isNPCSpeaking=false;
+let pendingUtterances=[];
+let shouldAwaitUser=true;
 const pool={
 "家庭饭桌试炼":{id:"shandong_dinner",icon:"🍜",members:[
 {a:"👴",n:"大舅",r:"主陪·长辈",b:"看重礼数与体面，善于在热闹中施压"},
@@ -925,10 +1432,10 @@ const pool={
 {a:"👔",n:"李总",r:"乙方商务",b:"善于铺垫关系，强调互利与长期合作"},
 {a:"🧠",n:"周顾问",r:"风险顾问",b:"盯条款边界和落地风险，追问很尖锐"}
 ]},
-"高压结构化面试":{id:"interview",icon:"💼",members:[
-{a:"👨‍💼",n:"主面试官",r:"主考官",b:"重视问题拆解与决策质量"},
-{a:"👩‍💼",n:"HR",r:"HR负责人",b:"关注价值观、沟通方式与团队匹配"},
-{a:"🧑‍💻",n:"技术负责人",r:"技术面",b:"追问细节真实性与交付过程"}
+"群面竞争场":{id:"interview",icon:"💼",members:[
+{a:"👩‍💼",n:"竞争者A",r:"面试对手",b:"自信强势，善于表现自己"},
+{a:"🧑‍💼",n:"竞争者B",r:"面试对手",b:"沉稳细致，回答有条理"},
+{a:"👨‍💼",n:"竞争者C",r:"面试对手",b:"思维活跃，常有创新观点"}
 ]},
 "立场攻防辩论":{id:"debate",icon:"⚔️",members:[
 {a:"🟦",n:"正方辩手",r:"主张方",b:"强调收益、效率与可行性"},
@@ -939,11 +1446,163 @@ const pool={
 const presetSceneDescriptions={
 "家庭饭桌试炼":"春节返乡家宴，长辈主导节奏，话题围绕工作进展、婚恋与人情往来。你需要稳住礼貌、边界与表达力度。",
 "商务饭局谈判":"合作签约前夜的商务晚宴，重点在信任、利益边界与合作节奏。语言要有分寸，既给面子也守底线。",
-"高压结构化面试":"终面场景，考察结构化表达、抗压、复盘能力和团队协作倾向。答案需结论先行、证据支撑。",
+"群面竞争场":"多人面试现场，与其他应聘者同台竞争。主面试官在旁观察，你需要在竞争中展现优势，答案需结论先行、证据支撑。",
 "立场攻防辩论":"围绕公共议题展开攻防，强调定义清晰、证据质量和反驳针对性。避免空泛口号。"
 };
+
+const banquetLevelDescriptions={
+"formal":"正式商务宴请：高端酒店包间，精心布置的餐桌，双方高层悉数到场。这是礼仪性资源展示，信任建立的前置仪式。着装正式，举止得体，言谈谨慎而有分量。酒过三巡后才逐渐进入正题，重点在建立关系、展示诚意，为后续合作铺路。",
+"informal":"非正式摸底：装修雅致的私房菜餐厅，氛围相对轻松。双方试探，话里有话。看似随意的闲聊中暗藏机锋，每一个话题都可能是在打探底线。不需要过于正式，但要时刻保持警觉，听懂弦外之音，同时巧妙地传递自己的立场。",
+"truth":"酒后吐真言：酒过数巡，氛围变得热烈而直接。高压下的情感博弈，测试忠诚度。酒精卸下了部分伪装，话语开始变得尖锐和真实。这是考验彼此信任和底线的时刻，需要在保持清醒的同时，应对各种情感和利益的考验。",
+"street":"深夜大排档：霓虹灯闪烁的街头，塑料板凳，冰镇啤酒。卸下伪装，进行最后的利益交换。没有了办公室的繁文缛节，大家都露出了最真实的一面。这是敲定最终细节的时刻，直接、务实、不绕弯子，但也要守住自己的核心利益。"
+};
+
+const interviewQuestions={
+"互联网":{
+"产品":"请分享你最近使用的一个产品，分析它的核心需求、用户痛点和你的改进建议。",
+"销售":"假设我们要推出一款新的SaaS产品，目标客户是中小企业，你会如何设计销售策略？",
+"市场":"请为我们即将上线的社交产品设计一个冷启动的营销策略，预算50万。",
+"分析":"如果给你一份用户行为数据，你会从哪些维度进行分析，来提升产品的用户留存？"
+},
+"金融":{
+"产品":"请设计一款面向年轻人群的理财产品，说明它的核心卖点和风控机制。",
+"销售":"如何向高净值客户推荐我们的财富管理服务？请模拟一个销售场景。",
+"市场":"请为我们银行的信用卡业务设计一个年度营销方案，目标是提升年轻客群的活跃度。",
+"分析":"如果发现某款理财产品的赎回率突然上升，你会如何分析原因并给出建议？"
+},
+"快消":{
+"产品":"请为我们的新品奶茶设计一个产品概念，包括口味、包装和定价策略。",
+"销售":"如何在3个月内将一款新零食打进本地的连锁超市渠道？",
+"市场":"请为我们的品牌设计一个双11的营销活动，目标是提升销售额30%。",
+"分析":"如果发现某款产品在某个区域的销量下滑，你会如何分析原因并给出改进建议？"
+},
+"咨询":{
+"产品":"请分享你做过的一个产品咨询项目，说明你的分析框架和最终成果。",
+"销售":"如何向一家传统企业销售数字化转型咨询服务？请说明你的销售流程。",
+"市场":"请为一家新成立的咨询公司设计品牌定位和市场推广策略。",
+"分析":"如果客户说他们的利润率在下降，你会如何进行分析并给出建议？"
+}
+};
+
+let selectedBanquetLevel='formal';
+let drinkingCapacity=0;
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
+
+function setDrinkingCapacity(score){
+    drinkingCapacity=score;
+    const stars=document.querySelectorAll('#drinkingCapacityStars .star');
+    stars.forEach((star,index)=>{
+        if(index<score){
+            star.textContent='★';
+            star.classList.add('filled');
+        } else {
+            star.textContent='☆';
+            star.classList.remove('filled');
+        }
+    });
+}
+
+let selectedIndustry='互联网';
+let selectedPosition='产品';
+
+function updateInterviewQuestion(){
+    if(scene !== '群面竞争场') return;
+    
+    let question = '';
+    const customIndustryVal = $('customIndustryInput').value;
+    const customPositionVal = $('customPositionInput').value;
+    
+    const industry = selectedIndustry === '自定义' ? customIndustryVal : selectedIndustry;
+    const position = selectedPosition === '自定义' ? customPositionVal : selectedPosition;
+    
+    if(interviewQuestions[selectedIndustry] && interviewQuestions[selectedIndustry][selectedPosition]){
+        question = interviewQuestions[selectedIndustry][selectedPosition];
+    } else if(industry && position){
+        question = `请分享一个你在${industry}行业做${position}相关工作的经历，说明你遇到的最大挑战和解决方案。`;
+    } else {
+        question = '请介绍你自己，并分享一个最能体现你能力的项目经历。';
+    }
+    
+    applySceneInfo(question);
+}
+
+async function generateCustomInterviewQuestion(){
+    const btn = document.getElementById('aiCustomizeBtn');
+    const originalText = btn.textContent;
+    
+    const customIndustryVal = $('customIndustryInput').value;
+    const customPositionVal = $('customPositionInput').value;
+    
+    const industry = selectedIndustry === '自定义' ? customIndustryVal : selectedIndustry;
+    const position = selectedPosition === '自定义' ? customPositionVal : selectedPosition;
+    
+    if(!industry || !position){
+        alert('请先选择或输入行业和岗位');
+        return;
+    }
+    
+    try {
+        btn.disabled = true;
+        btn.textContent = '生成中...';
+        
+        const r = await fetch('/api/interview/generate_question', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ 
+                industry: industry,
+                position: position
+            })
+        });
+        
+        const d = await r.json();
+        if (d.success && d.data && d.data.question) {
+            applySceneInfo(d.data.question);
+        } else {
+            alert('生成失败: ' + (d.error || '未知错误'));
+        }
+    } catch (e) {
+        alert('生成失败: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+function selectIndustry(el){
+    selectedIndustry=el.dataset.value;
+    document.querySelectorAll('#industryTags .interview-tag').forEach(t=>t.classList.remove('selected'));
+    el.classList.add('selected');
+    
+    const customInput=$('customIndustryInput');
+    if(selectedIndustry==='自定义'){
+        customInput.style.display='block';
+        customInput.focus();
+    } else {
+        customInput.style.display='none';
+    }
+    
+    updateInterviewQuestion();
+}
+
+function selectPosition(el){
+    selectedPosition=el.dataset.value;
+    document.querySelectorAll('#positionTags .interview-tag').forEach(t=>t.classList.remove('selected'));
+    el.classList.add('selected');
+    
+    const customInput=$('customPositionInput');
+    if(selectedPosition==='自定义'){
+        customInput.style.display='block';
+        customInput.focus();
+    } else {
+        customInput.style.display='none';
+    }
+    
+    updateInterviewQuestion();
+}
+
 function isPresetScene(){return !!pool[scene]}
 function applySceneInfo(description){
     const sceneDescText=document.getElementById('sceneDescriptionText');
@@ -955,22 +1614,46 @@ function applySceneInfo(description){
 }
 function refreshSceneInfoForSelection(){
     const btn=document.getElementById('sceneGenBtn');
+    const sceneInfoTitle=document.getElementById('sceneInfoTitle');
+    const aiCustomizeBtn=document.getElementById('aiCustomizeBtn');
     const preset=isPresetScene();
     if(preset){
-        applySceneInfo(presetSceneDescriptions[scene]||`${scene}场景，角色和背景已预置。`);
+        // 根据场景更新标题和按钮显示
+        if(scene === '群面竞争场'){
+            sceneInfoTitle.textContent='面试问题';
+            aiCustomizeBtn.style.display='inline-block';
+        } else {
+            sceneInfoTitle.textContent='背景信息';
+            aiCustomizeBtn.style.display='none';
+        }
+        
+        // 如果是商务饭局谈判场景，使用酒局等级对应的描述
+        if(scene === '商务饭局谈判'){
+            applySceneInfo(banquetLevelDescriptions[selectedBanquetLevel]);
+            btn.style.display='block';
+        } else if(scene === '群面竞争场'){
+            updateInterviewQuestion();
+            btn.style.display='none';
+        } else {
+            applySceneInfo(presetSceneDescriptions[scene]||`${scene}场景，角色和背景已预置。`);
+            btn.style.display='block';
+        }
         document.getElementById('memberSection').style.display='block';
         document.getElementById('mg').style.display='flex';
         document.getElementById('actionButtons').style.display='flex';
-        btn.disabled=true;
-        btn.textContent='已有场景已预置背景信息';
+        btn.disabled=false;
+        btn.textContent='🔄 重新生成场景设定';
         return;
     }
     applySceneInfo('');
     btn.disabled=false;
-    btn.textContent='新增场景时生成背景信息';
+    btn.textContent='🔄 重新生成场景设定';
+    btn.style.display='block';
+    sceneInfoTitle.textContent='背景信息';
+    aiCustomizeBtn.style.display='none';
 }
 function detectEmotion(t){if(!t)return'😐';const lower=t.toLowerCase();if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
-function buildHeadCard(c){return `<div class="ci state-idle look-user expr-neutral" data-n="${c.n}"><div class="head"><span class="avatar-main">${c.a||'🙂'}</span><span class="avatar-exp">😐</span></div><div class="npc-meta"><div class="cn">${c.n}</div><div class="role">${c.r||''}</div><div class="mood-pill">平静</div></div><span class="backchannel">嗯</span></div>`}
+function buildHeadCard(c){return `<div class="ci state-idle look-user expr-neutral" data-n="${c.n}"><div class="head"><span class="avatar-main">${c.a||'🙂'}</span><span class="avatar-exp">😐</span></div><div class="npc-meta"><div class="cn">${c.n}</div><div class="role">${c.r||''}</div><div class="mood-pill">平静</div></div></div>`}
 function setRenderState(name,patch={}){if(!npcRenderState[name])npcRenderState[name]={state:'idle',look:'user',backchannel:''};Object.assign(npcRenderState[name],patch)}
 function _resolveExpression(st){
     if(st.state==='speaking')return {key:'engaged',label:'发言中',emoji:'🗣️'};
@@ -979,7 +1662,7 @@ function _resolveExpression(st){
     if(st.state==='listening')return {key:'calm',label:'在聆听',emoji:'😌'};
     return {key:'neutral',label:'平静',emoji:'😐'};
 }
-function applyRenderState(name){const card=document.querySelector(`.ci[data-n="${name}"]`);if(!card)return;const st=npcRenderState[name]||{state:'idle',look:'user',backchannel:''};card.classList.remove('state-idle','state-listening','state-reacting','state-speaking','look-user','look-speaker','has-backchannel','expr-neutral','expr-calm','expr-focused','expr-engaged','expr-warm');card.classList.add(`state-${st.state}`);card.classList.add(`look-${st.look||'user'}`);const expr=_resolveExpression(st);card.classList.add(`expr-${expr.key}`);const mood=card.querySelector('.mood-pill');if(mood)mood.textContent=expr.label;const exp=card.querySelector('.avatar-exp');if(exp)exp.textContent=expr.emoji;const bc=card.querySelector('.backchannel');if(st.backchannel){card.classList.add('has-backchannel');if(bc)bc.textContent=st.backchannel}else if(bc){bc.textContent=''}}
+function applyRenderState(name){const card=document.querySelector(`.ci[data-n="${name}"]`);if(!card)return;const st=npcRenderState[name]||{state:'idle',look:'user',backchannel:''};card.classList.remove('state-idle','state-listening','state-reacting','state-speaking','look-user','look-speaker','has-backchannel','expr-neutral','expr-calm','expr-focused','expr-engaged','expr-warm');card.classList.add(`state-${st.state}`);card.classList.add(`look-${st.look||'user'}`);const expr=_resolveExpression(st);card.classList.add(`expr-${expr.key}`);const mood=card.querySelector('.mood-pill');if(mood)mood.textContent=expr.label;const exp=card.querySelector('.avatar-exp');if(exp)exp.textContent=expr.emoji}
 function blinkRandom(){document.querySelectorAll('#cl .ci').forEach(card=>{if(card.classList.contains('state-speaking'))return;if(Math.random()<0.05){card.classList.add('blink');setTimeout(()=>card.classList.remove('blink'),120)}})}
 function renderConversationState(mode,speaker=''){
     const names=chars.map(c=>c.n);
@@ -987,23 +1670,143 @@ function renderConversationState(mode,speaker=''){
     names.forEach((name,idx)=>{
         if(mode==='npc_speaking'){
             const isSpeaker=name===speaker;
-            setRenderState(name,{state:isSpeaker?'speaking':'listening',look:isSpeaker?'user':'speaker',backchannel:''});
+            setRenderState(name,{state:isSpeaker?'speaking':'listening',look:isSpeaker?'user':'speaker'});
         }else if(mode==='after_npc'){
             const isSpeaker=name===speaker;
-            setRenderState(name,{state:isSpeaker?'reacting':'listening',look:'user',backchannel:isSpeaker?'嗯':''});
+            setRenderState(name,{state:isSpeaker?'reacting':'listening',look:'user'});
         }else if(mode==='user_speaking'){
-            setRenderState(name,{state:'listening',look:'user',backchannel:idx===0?'请讲':''});
+            setRenderState(name,{state:'listening',look:'user'});
         }else{
-            setRenderState(name,{state:'listening',look:'user',backchannel:''});
+            setRenderState(name,{state:'listening',look:'user'});
         }
         applyRenderState(name);
     });
 }
 function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.focus+emotionData.nervous)/2));const stress=Math.max(0,Math.min(100,(emotionData.nervous+(100-emotionData.calm))/2));if(stress>66||confusion>70)return 'controlled_rescue';if(scene.includes('面试')||selectedScenarioId==='interview')return 'pressure_check';return 'table_banter'}
 function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;blinkRandom()},1400)}
-function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active')}
+function goBackFromGame(){
+    if(confirm('返回将清除当前对话记录，确定要返回吗？')){
+        sid=null;
+        hist=[];
+        pendingUtterances=[];
+        shouldAwaitUser=true;
+        isNPCSpeaking=false;
+        lastSpeaker='';
+        
+        $('mc2').innerHTML='';
+        $('cl').innerHTML='';
+        $('cb').style.display='none';
+        $('interruptBtn').style.display='none';
+        updScr(50,50);
+        renderConversationState('idle');
+        
+        show('p2');
+    }
+}
+function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active');const loginBtn=document.getElementById('loginBtn');if(p==='p3'&&!currentUser){loginBtn.style.display='none'}else if(!currentUser){loginBtn.style.display='block'}}
+function selectPressureTag(el){
+    const tag = el.dataset.tag;
+    console.log('点击标签:', tag);
+    console.log('当前选中标签:', selectedPressureTags);
+    
+    // 切换选中状态
+    if(el.classList.contains('selected')){
+        // 取消选中
+        el.classList.remove('selected');
+        selectedPressureTags = selectedPressureTags.filter(t => t !== tag);
+    } else {
+        // 选中
+        el.classList.add('selected');
+        if(!selectedPressureTags.includes(tag)){
+            selectedPressureTags.push(tag);
+        }
+    }
+    
+    console.log('更新后选中标签:', selectedPressureTags);
+    
+    // 处理自定义输入
+    const customPressureInput = $('customPressureInput');
+    if(selectedPressureTags.includes('自定义')){
+        customPressureInput.style.display = 'block';
+    } else {
+        customPressureInput.style.display = 'none';
+    }
+    
+    // 暂时始终显示压力值滑块，用于调试
+    const pressureValueBox = $('pressureValueBox');
+    console.log('压力值盒子元素:', pressureValueBox);
+    pressureValueBox.style.display = 'flex';
+}
+
+function updatePressureValue(value){
+    pressureValue = parseInt(value);
+    $('pressureDisplay').textContent = value;
+}
+
+function selectBanquetLevel(el){
+    const level = el.dataset.level;
+    selectedBanquetLevel = level;
+    
+    // 取消所有选中状态
+    document.querySelectorAll('.banquet-level-tag').forEach(t=>t.classList.remove('selected'));
+    // 选中当前标签
+    el.classList.add('selected');
+    
+    // 更新场景信息
+    applySceneInfo(banquetLevelDescriptions[level]);
+}
+
+function refreshBanquetLevelInfo(){
+    if(scene === '商务饭局谈判'){
+        applySceneInfo(banquetLevelDescriptions[selectedBanquetLevel]);
+    }
+}
 function goCfg(){show('p2')}
-function selScene(el){document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));el.classList.add('on');scene=el.dataset.s;const p=pool[scene];selectedScenarioId=p?p.id:'shandong_dinner';genMems()}
+function selScene(el){
+    document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));
+    el.classList.add('on');
+    scene=el.dataset.s;
+    const p=pool[scene];
+    selectedScenarioId=p?p.id:'shandong_dinner';
+    
+    // 只在家庭饭桌场景显示压力敏感区
+    const pressureSectionWrapper = $('pressureSectionWrapper');
+    const customPressureInput = $('customPressureInput');
+    const pressureValueBox = $('pressureValueBox');
+    
+    if(scene.includes('家庭')){
+        pressureSectionWrapper.style.display = 'block';
+    } else {
+        pressureSectionWrapper.style.display = 'none';
+        customPressureInput.style.display = 'none';
+        pressureValueBox.style.display = 'none';
+        // 清除选择
+        document.querySelectorAll('.pressure-tag').forEach(t=>t.classList.remove('selected'));
+        selectedPressureTags = [];
+    }
+    
+    // 只在商务饭局谈判场景显示酒局等级
+    const banquetLevelWrapper = $('banquetLevelWrapper');
+    
+    if(scene === '商务饭局谈判'){
+        banquetLevelWrapper.style.display = 'block';
+        // 应用选中的酒局等级对应的场景信息
+        applySceneInfo(banquetLevelDescriptions[selectedBanquetLevel]);
+    } else {
+        banquetLevelWrapper.style.display = 'none';
+    }
+    
+    // 只在群面竞争场场景显示面试信息
+    const interviewInfoWrapper = $('interviewInfoWrapper');
+    
+    if(scene === '群面竞争场'){
+        interviewInfoWrapper.style.display = 'block';
+    } else {
+        interviewInfoWrapper.style.display = 'none';
+    }
+    
+    genMems();
+}
 function genMems(){
     const p=pool[scene];
     if(p){
@@ -1050,7 +1853,14 @@ function genMems(){
     renderScenes();
     refreshSceneInfoForSelection();
 }
-function renderScenes(){$('sg').innerHTML=scenes.map(s=>`<div class="sc${s===scene?' on':''}" data-s="${s}" onclick="selScene(this)"><div style="font-size:24px">${pool[s].icon}</div><div>${s}</div></div>`).join('')}
+function renderScenes(){$('sg').innerHTML=scenes.map(s=>{
+    const isDebate = s === "立场攻防辩论";
+    const displayName = isDebate ? "日常纠纷化解" : s;
+    const disabledClass = isDebate ? " disabled" : "";
+    const extraStyle = isDebate ? 'style="opacity:0.5;pointer-events:none;cursor:not-allowed;"' : '';
+    const extraContent = isDebate ? '<div style="font-size:12px;color:#888;margin-top:4px;">（开发中）</div>' : '';
+    return `<div class="sc${s===scene?' on':''}${disabledClass}" data-s="${s}" ${isDebate ? '' : `onclick="selScene(this)"`} ${extraStyle}><div style="font-size:24px">${pool[s].icon}</div><div>${displayName}</div>${extraContent}</div>`;
+}).join('')}
 function renderMems(){
     // 使用动态用户信息，如果未设置则使用默认值
     const userInfo = window.userInfo || {
@@ -1060,7 +1870,7 @@ function renderMems(){
         b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
     };
     
-    const userMember = `<div class="mc" style="border:2px solid #4A90E2;background:#E3F2FD;position:relative;cursor:pointer" title="${userInfo.b}">
+    const userMember = `<div class="mc mc-tooltip" style="border:2px solid #4A90E2;background:#E3F2FD;position:relative;cursor:pointer" data-tooltip="${userInfo.b}">
         <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;background:#2196F3;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;transform:rotate(15deg);box-shadow:0 2px 5px rgba(0,0,0,0.2);z-index:10;">你的角色</div>
         <div style="position:absolute;top:5px;right:5px;cursor:pointer;font-size:16px;" onclick="editMember('user')">✏️</div>
         <div class="ma">${userInfo.a}</div>
@@ -1070,7 +1880,7 @@ function renderMems(){
     </div>`;
     
     $('mg').innerHTML=mems.map((m,i)=>`
-        <div class="mc" style="position:relative;cursor:pointer" title="${m.b || m.personality || '无详细信息'}">
+        <div class="mc mc-tooltip" style="position:relative;cursor:pointer" data-tooltip="${m.b || m.personality || '无详细信息'}">
             <div style="position:absolute;top:5px;right:5px;cursor:pointer;font-size:16px;" onclick="editMember(${i})">✏️</div>
             <div class="ma">${m.a}</div>
             <div class="mn">${m.n}</div>
@@ -1082,19 +1892,80 @@ function renderMems(){
 
 function toggleSceneEdit() {
     const textDiv = document.getElementById('sceneDescriptionText');
+    const editWrapper = document.getElementById('sceneEditWrapper');
     const editArea = document.getElementById('sceneDescriptionEdit');
     
-    if (editArea.style.display === 'none') {
+    if (editWrapper.style.display === 'none') {
         // 切换到编辑模式
         editArea.value = textDiv.innerText;
         textDiv.style.display = 'none';
-        editArea.style.display = 'block';
+        editWrapper.style.display = 'block';
         editArea.focus();
     } else {
         // 切换回显示模式
         textDiv.innerText = editArea.value;
         textDiv.style.display = 'block';
-        editArea.style.display = 'none';
+        editWrapper.style.display = 'none';
+    }
+}
+
+function confirmSceneEdit() {
+    const textDiv = document.getElementById('sceneDescriptionText');
+    const editWrapper = document.getElementById('sceneEditWrapper');
+    const editArea = document.getElementById('sceneDescriptionEdit');
+    
+    textDiv.innerText = editArea.value;
+    textDiv.style.display = 'block';
+    editWrapper.style.display = 'none';
+}
+
+async function aiOptimizeContent() {
+    const btn = document.getElementById('aiOptimizeBtn');
+    const originalText = btn.textContent;
+    const editArea = document.getElementById('sceneDescriptionEdit');
+    const currentContent = editArea.value.trim();
+    
+    if (!currentContent) {
+        alert('请先输入一些内容再进行优化');
+        return;
+    }
+    
+    // 确定场景类型
+    let sceneType = 'general';
+    if (scene === '家庭饭桌试炼') {
+        sceneType = 'family';
+    } else if (scene === '商务饭局谈判') {
+        sceneType = 'business';
+    } else if (scene === '群面竞争场') {
+        sceneType = 'interview';
+    }
+    
+    try {
+        btn.disabled = true;
+        btn.textContent = '优化中...';
+        
+        const r = await fetch('/api/content/optimize', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ 
+                content: currentContent,
+                scene_type: sceneType
+            })
+        });
+        
+        const d = await r.json();
+        if (d.success && d.data && d.data.optimized_content) {
+            editArea.value = d.data.optimized_content;
+        } else {
+            alert('优化失败: ' + (d.error || '未知错误'));
+        }
+    } catch (e) {
+        alert('优化失败: ' + e.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 }
 
@@ -1189,7 +2060,7 @@ async function randMem() {
         
         b.disabled = true;
         
-        const r = await fetch('/api/scenario/generate', {
+        const r = await fetch('/api/scenario/regenerate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -1251,16 +2122,17 @@ async function randMem() {
 }
 
 async function regenerateScene() {
+    // 显示确认框
+    if (!confirm('⚠️ 重新生成将覆盖当前编辑内容，确定继续？')) {
+        return;
+    }
+    
     try {
         const b = document.getElementById('sceneGenBtn');
-        if(isPresetScene()){
-            refreshSceneInfoForSelection();
-            return;
-        }
         const originalText = b.textContent;
         
         // 更改按钮文本为动态加载文案
-        const loadingMessages = ['正在设计社交场景...', '正在构建人物关系...', '正在生成对话策略...', '即将完成...'];
+        const loadingMessages = ['正在重新设计场景...', '正在重构人物关系...', '正在生成新设定...', '即将完成...'];
         let currentIndex = 0;
         let intervalId;
         
@@ -1277,12 +2149,16 @@ async function regenerateScene() {
         
         b.disabled = true;
         
-        const r = await fetch('/api/scenario/generate', {
+        const r = await fetch('/api/scenario/regenerate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ scene_type: selectedScenarioId, scene_name: scene })
+            body: JSON.stringify({ 
+                scene_type: selectedScenarioId, 
+                scene_name: scene,
+                banquet_level: scene === '商务饭局谈判' ? selectedBanquetLevel : null
+            })
         });
         
         clearInterval(intervalId);
@@ -1337,20 +2213,21 @@ async function regenerateScene() {
                 document.getElementById('actionButtons').style.display = 'flex';
                 
                 // 改变按钮文字为"重新生成背景信息"
-                b.textContent = '重新生成背景信息';
+                alert('✅ 场景设定已重新生成！');
             }
         } else {
-            b.textContent = '新增场景时生成背景信息';
+            b.textContent = '🔄 重新生成场景设定';
             alert('生成失败: ' + (d.error || '未知错误'));
         }
     } catch (e) {
         console.error('生成场景时出错:', e);
         const b = document.getElementById('sceneGenBtn');
-        b.textContent = '新增场景时生成背景信息';
-        alert('生成场景时出错，请稍后再试');
+        b.textContent = '🔄 重新生成场景设定';
+        alert('❌ 重新生成场景失败：' + e.message);
     } finally {
         const b = document.getElementById('sceneGenBtn');
         b.disabled = false;
+        b.textContent = '�� 重新生成场景设定';
     }
 }
 async function start(){
@@ -1360,30 +2237,658 @@ $('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
 renderConversationState('idle');
 runNonverbalLoop();
 updScr(50,50);
-try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),user_info:(window.userInfo||null)})});
+
+// 处理面试问题显示
+const interviewQuestionBox = $('interviewQuestionBox');
+const interviewQuestionContent = $('interviewQuestionContent');
+const sceneDescription = $('sceneDescriptionEdit')?.value || $('sceneDescriptionText')?.innerText || '';
+
+if(scene === '群面竞争场'){
+    interviewQuestionContent.textContent = sceneDescription;
+    interviewQuestionContent.classList.remove('collapsed');
+    interviewQuestionBox.style.display = 'block';
+    document.querySelector('.interview-question-toggle').classList.remove('collapsed');
+    document.getElementById('toggleArrow').textContent = '▼';
+} else {
+    interviewQuestionBox.style.display = 'none';
+}
+
+try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:sceneDescription,user_info:(window.userInfo||null)})});
 const d=await r.json();if(!d.success){alert(d.error);return}
-sid=d.data.session_id;if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))}catch(e){alert(e)}
+sid=d.data.session_id;
+if(d.data.is_unified_agent){
+    pendingUtterances=d.data.utterances||[];
+    shouldAwaitUser=d.data.should_await_user!==false;
+    if(pendingUtterances.length>0){
+        displayUtterances();
+    }else if(shouldAwaitUser){
+        shouldAwaitUser=true;
+        $('interruptBtn').style.display='none';
+    }
+}else{
+    if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))
+}
+}catch(e){alert(e)}
+}
+
+function toggleInterviewQuestionBox(){
+    const content = $('interviewQuestionContent');
+    const toggle = document.querySelector('.interview-question-toggle');
+    const arrow = document.getElementById('toggleArrow');
+    
+    if(content.classList.contains('collapsed')){
+        content.classList.remove('collapsed');
+        toggle.classList.remove('collapsed');
+        arrow.textContent = '▼';
+    } else {
+        content.classList.add('collapsed');
+        toggle.classList.add('collapsed');
+        arrow.textContent = '▲';
+    }
 }
 async function send(){
 const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';renderConversationState('user_speaking');addUser(t);
 const multimodal={emotion:emotionData,voice_level:isM?($('volLabel').textContent.replace('麦克风音量: ','').replace('%','')||0):0};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
-const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));if(d.data.judgment){$('cb').style.display='flex';let judge=d.data.judgment;if(d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}$('ct2').textContent=judge}updScr(d.data.new_dominance.user,d.data.new_dominance.ai);updateMetrics(d.data.scores);if(d.data.game_over)setTimeout(end,2000)}}catch(e){console.log('[Chat] 错误:', e)}
+const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
+    if(d.data.utterances){
+        pendingUtterances=d.data.utterances||[];
+        shouldAwaitUser=d.data.should_await_user!==false;
+        if(pendingUtterances.length>0){
+            displayUtterances();
+        }else if(shouldAwaitUser){
+            shouldAwaitUser=true;
+            $('interruptBtn').style.display='none';
+        }
+        if(d.data.judgment){$('cb').style.display='flex';let judge=d.data.judgment;if(d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}$('ct2').textContent=judge}
+        if(d.data.new_dominance)updScr(d.data.new_dominance.user,d.data.new_dominance.ai);
+        if(d.data.scores)updateMetrics(d.data.scores);
+        if(d.data.game_over)setTimeout(end,2000);
+    }else{
+        if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));
+        if(d.data.judgment){$('cb').style.display='flex';let judge=d.data.judgment;if(d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}$('ct2').textContent=judge}
+        updScr(d.data.new_dominance.user,d.data.new_dominance.ai);
+        updateMetrics(d.data.scores);
+        if(d.data.game_over)setTimeout(end,2000)
+    }
+}}catch(e){console.log('[Chat] 错误:', e)}
 }
 function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
-function addBot(t,sp,emo){hist.push({role:'assistant',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg b">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight;const speaker=sp||chars[0]?.n||'';if(speaker){lastSpeaker=speaker;renderConversationState('npc_speaking',speaker);const card=document.querySelector(`.ci[data-n="${speaker}"] .ca`);if(card){card.style.transform='scale(1.12)';setTimeout(()=>card.style.transform='scale(1)',220)}setTimeout(()=>renderConversationState('after_npc',speaker),700)}else{renderConversationState('idle')}}
+
+function addBotStreaming(t,sp,emo){
+    hist.push({role:'assistant',content:t});
+    const c=$('mc2');
+    const msgId='msg-'+Date.now();
+    c.innerHTML+=`<div class="msg b" id="${msgId}">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco"></div></div>`;
+    c.scrollTop=c.scrollHeight;
+    
+    const speaker=sp||chars[0]?.n||'';
+    if(speaker){
+        lastSpeaker=speaker;
+        renderConversationState('npc_speaking',speaker);
+        const card=document.querySelector(`.ci[data-n="${speaker}"] .ca`);
+        if(card){card.style.transform='scale(1.12)';setTimeout(()=>card.style.transform='scale(1)',220)}
+    }else{
+        renderConversationState('idle');
+    }
+    
+    const mco=document.querySelector(`#${msgId} .mco`);
+    let idx=0;
+    return new Promise((resolve)=>{
+        const typeChar=()=>{
+            if(idx<t.length){
+                mco.textContent+=t.charAt(idx);
+                idx++;
+                c.scrollTop=c.scrollHeight;
+                setTimeout(typeChar,30);
+            }else{
+                if(speaker){
+                    setTimeout(()=>renderConversationState('after_npc',speaker),700);
+                }
+                resolve();
+            }
+        };
+        typeChar();
+    });
+}
+
+async function displayUtterances(){
+    if(pendingUtterances.length===0){
+        if(shouldAwaitUser){
+            isNPCSpeaking=false;
+            $('interruptBtn').style.display='none';
+        }else{
+            await continueNPC();
+        }
+        return;
+    }
+    
+    isNPCSpeaking=true;
+    $('interruptBtn').style.display='inline-flex';
+    
+    const utterance=pendingUtterances.shift();
+    console.log('[displayUtterances] utterance:', utterance);
+    console.log('[displayUtterances] chars:', chars);
+    const npc=chars.find(c=>c.n===utterance.npc_id||c.a===utterance.npc_id);
+    const speakerName=npc?npc.n:utterance.npc_id;
+    console.log('[displayUtterances] speakerName:', speakerName);
+    
+    await addBotStreaming(utterance.text,speakerName,detectEmotion(utterance.text));
+    
+    const delay=utterance.delay_ms||3000;
+    setTimeout(displayUtterances,delay);
+}
+
+async function interrupt(){
+    if(!isNPCSpeaking)return;
+    
+    pendingUtterances=[];
+    isNPCSpeaking=false;
+    $('interruptBtn').style.display='none';
+    
+    try{
+        const r=await fetch('/api/chat/interrupt',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({session_id:sid})
+        });
+        const d=await r.json();
+        if(d.success){
+            pendingUtterances=d.data.utterances||[];
+            shouldAwaitUser=d.data.should_await_user!==false;
+        }
+    }catch(e){
+        console.log('[Interrupt] 错误:',e);
+    }
+}
+
+async function continueNPC(){
+    try{
+        const r=await fetch('/api/chat/continue',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({session_id:sid})
+        });
+        const d=await r.json();
+        if(d.success){
+            pendingUtterances=d.data.utterances||[];
+            shouldAwaitUser=d.data.should_await_user!==false;
+            if(pendingUtterances.length>0){
+                displayUtterances();
+            }
+        }
+    }catch(e){
+        console.log('[Continue] 错误:',e);
+    }
+}
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
-async function end(){if(!sid)return;try{const r=await fetch('/api/session/end',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success){$('rc').innerHTML=`<div class="rt">${d.data.scene_name}</div><div class="md">${d.data.medal}</div><div class="sg2"><div class="sb2"><div class="sbl">情商</div><div class="sbv">${d.data.scores.emotional}</div></div><div class="sb2"><div class="sbl">反应</div><div class="sbv">${d.data.scores.reaction}</div></div><div class="sb2"><div class="sbl">总分</div><div class="sbv">${d.data.scores.total}</div></div></div><div class="rs">${d.data.summary}</div><div class="rss">${d.data.suggestion}</div><div class="rb2"><button class="btn2" onclick="show('p1')">返回菜单</button></div>`;show('p4')}}catch(e){}}
-async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
+async function end(){
+    if(!sid)return;
+    try{
+        const r=await fetch('/api/session/end',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({session_id:sid})
+        });
+        const d=await r.json();
+        if(d.success){
+            const data=d.data;
+            // 生成称号中文名称
+            const medalNames={
+                '🥇':'社交达人',
+                '🥈':'社交能手',
+                '🥉':'社交新手',
+                '📘':'饭桌木头人'
+            };
+            const medalName=medalNames[data.medal]||'社交新手';
+            
+            // 构建 HTML
+            $('rc').innerHTML=`
+<div style="display:flex;gap:40px;max-height:80vh;overflow:hidden;width:90%;margin:0 auto;">
+    <!-- 左侧面板 -->
+    <div style="flex:0 0 380px;display:flex;flex-direction:column;align-items:center;padding:20px;border-right:1px dashed #eee;">
+        <h1 style="margin:0;font-size:26px;color:#1a1a1a;">局后复盘</h1>
+        <p style="color:#666;font-size:13px;margin-top:4px;">在"${data.scene_name}"中的表现</p>
+        
+        <!-- 称号 -->
+        <div style="background:#e74c3c;color:white;padding:10px 20px;border-radius:12px;font-weight:800;font-size:18px;transform:rotate(-3deg);box-shadow:4px 8px 15px rgba(231,76,60,0.3);margin:20px 0;cursor:pointer;transition:all 0.3s;">
+            ${medalName}
+        </div>
+        
+        <!-- 雷达图 -->
+        <canvas id="radarChart" width="300" height="300" style="margin:10px 0;"></canvas>
+        
+        <!-- 五维度分数条 -->
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;width:100%;margin-top:20px;">
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">圆滑度</span>
+                <b style="font-size:15px;color:#4a5dca;">${data.scores.oily}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">亲和力</span>
+                <b style="font-size:15px;color:#4a5dca;">${data.scores.friendliness}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">逻辑性</span>
+                <b style="font-size:15px;color:#4a5dca;">${data.scores.logic}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">幽默感</span>
+                <b style="font-size:15px;color:#4a5dca;">${data.scores.humor}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">懂规矩</span>
+                <b style="font-size:15px;color:#4a5dca;">${data.scores.respect}</b>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 右侧面板 -->
+    <div style="flex:1;overflow-y:auto;padding-right:10px;">
+        <!-- 综合点评 -->
+        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
+            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
+                <span style="margin-right:8px;">💬</span> 综合点评
+            </h3>
+            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${data.summary}</p>
+        </div>
+        
+        <!-- NPC 内心 OS -->
+        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
+            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
+                <span style="margin-right:8px;">🎭</span> NPC 内心 OS
+            </h3>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+                ${data.npc_os_list.map(npc=>`
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <div style="font-size:24px;">${npc.avatar||'👤'}</div>
+                    <div>
+                        <b style="font-size:13px;color:#333;">${npc.name}</b>
+                        <p style="margin:2px 0 0 0;font-size:12px;color:#666;">${npc.os||npc.thought||'表现一般'}</p>
+                    </div>
+                </div>
+                `).join('')}
+            </div>
+        </div>
+        
+        <!-- 改进建议 -->
+        <div style="background:#fffbe6;border:1px solid #ffe58f;padding:15px;border-radius:14px;transition:all 0.3s;">
+            <b style="display:block;font-size:14px;margin-bottom:5px;color:#856404;border-bottom:1px solid rgba(133,100,4,0.1);padding-bottom:3px;">
+                💡 改进建议
+            </b>
+            <p style="margin:0;font-size:13px;line-height:1.5;color:#666;">${data.suggestion}</p>
+        </div>
+    </div>
+</div>
+<div style="display:flex;justify-content:center;margin-top:20px;">
+    <button class="btn2" onclick="show('p1')">返回菜单</button>
+</div>
+`;
+            // 绘制雷达图
+            drawRadarChart(data.scores);
+            
+            show('p4');
+        }
+    }catch(e){
+        console.error('结束会话失败:',e);
+    }
+}
+
+function drawRadarChart(scores){
+    const canvas=document.getElementById('radarChart');
+    if(!canvas)return;
+    const ctx=canvas.getContext('2d');
+    const centerX=canvas.width/2;
+    const centerY=canvas.height/2;
+    const radius=Math.min(centerX,centerY)-40;
+    
+    // 五个维度
+    const labels=['Oily','Friendly','Logical','Humor','Respect'];
+    const values=[
+        scores.oily||50,
+        scores.friendliness||50,
+        scores.logic||50,
+        scores.humor||50,
+        scores.respect||50
+    ];
+    
+    // 清空画布
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    
+    // 绘制背景网格（5 个同心圆）
+    ctx.strokeStyle='#e0e0e0';
+    ctx.lineWidth=1;
+    for(let i=1;i<=5;i++){
+        const r=radius*i/5;
+        ctx.beginPath();
+        ctx.arc(centerX,centerY,r,0,Math.PI*2);
+        ctx.stroke();
+    }
+    
+    // 绘制轴线
+    ctx.strokeStyle='#d0d0d0';
+    for(let i=0;i<5;i++){
+        const angle=(Math.PI*2/5)*i-Math.PI/2;
+        const x=centerX+Math.cos(angle)*radius;
+        const y=centerY+Math.sin(angle)*radius;
+        ctx.beginPath();
+        ctx.moveTo(centerX,centerY);
+        ctx.lineTo(x,y);
+        ctx.stroke();
+    }
+    
+    // 绘制数据多边形
+    ctx.strokeStyle='#4a5dca';
+    ctx.lineWidth=2;
+    ctx.fillStyle='rgba(74,93,202,0.2)';
+    ctx.beginPath();
+    for(let i=0;i<5;i++){
+        const angle=(Math.PI*2/5)*i-Math.PI/2;
+        const value=values[i]/100;
+        const x=centerX+Math.cos(angle)*radius*value;
+        const y=centerY+Math.sin(angle)*radius*value;
+        if(i===0){
+            ctx.moveTo(x,y);
+        }else{
+            ctx.lineTo(x,y);
+        }
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    
+    // 绘制数据点
+    ctx.fillStyle='#4a5dca';
+    for(let i=0;i<5;i++){
+        const angle=(Math.PI*2/5)*i-Math.PI/2;
+        const value=values[i]/100;
+        const x=centerX+Math.cos(angle)*radius*value;
+        const y=centerY+Math.sin(angle)*radius*value;
+        ctx.beginPath();
+        ctx.arc(x,y,4,0,Math.PI*2);
+        ctx.fill();
+    }
+    
+    // 绘制标签
+    ctx.fillStyle='#666';
+    ctx.font='11px Arial';
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    for(let i=0;i<5;i++){
+        const angle=(Math.PI*2/5)*i-Math.PI/2;
+        const labelX=centerX+Math.cos(angle)*(radius+20);
+        const labelY=centerY+Math.sin(angle)*(radius+20);
+        ctx.fillText(labels[i],labelX,labelY);
+    }
+    
+    // 绘制刻度值
+    ctx.fillStyle='#999';
+    ctx.font='10px Arial';
+    for(let i=1;i<=5;i++){
+        const x=centerX+10;
+        const y=centerY-radius*i/5+3;
+        ctx.fillText(i*20,x,y);
+    }
+}
+function toggleCameraPanel(){const panel=$('monitorPanel');if(isFirstCameraClick){alert('欢迎使用摄像头功能！\n\n请选择您的摄像头设备，然后点击"开启摄像头"按钮。');isFirstCameraClick=false;}panel.classList.toggle('visible');}
+function toggleMicPanel(){if(isFirstMicClick){alert('欢迎使用麦克风功能！\n\n请选择您的麦克风设备，然后点击"开启麦克风"按钮。');isFirstMicClick=false;}toggleM2();}
+async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;vid.style.display='none';ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;vid.style.display='block';ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
 function updateEmotionDisplay(){$('val-confidence').textContent=emotionData.confidence;$('val-calm').textContent=emotionData.calm;$('val-nervous').textContent=emotionData.nervous;$('val-focus').textContent=emotionData.focus;$('bar-confidence').style.width=emotionData.confidence+'%';$('bar-calm').style.width=emotionData.calm+'%';$('bar-nervous').style.width=emotionData.nervous+'%';$('bar-focus').style.width=emotionData.focus+'%'}
 let micAnimId=null;
-function toggleM2(){const b=$('mmb'),micId=$('micSelect').value;if(isM){if(mic)mic.getTracks().forEach(t=>t.stop());if(micAnimId)cancelAnimationFrame(micAnimId);isM=0;b.textContent='🎤 开启麦克风';b.classList.remove('on');$('volLabel').textContent='麦克风音量';for(let i=1;i<=10;i++)$('vs'+i)?.classList.remove('active');$('vi').textContent='❓';$('vt').textContent='未检测';lastVoiceLevel=0}else{try{const constraints={audio:true};if(micId)constraints.deviceId={exact:micId};navigator.mediaDevices.getUserMedia(constraints).then(s=>{mic=s;isM=1;b.textContent='✅ 已开启';b.classList.add('on');const ctx=new(window.AudioContext||window.webkitAudioContext)(),src=ctx.createMediaStreamSource(mic),an=ctx.createAnalyser();an.fftSize=512;an.smoothingTimeConstant=0.8;src.connect(an);function m(){if(!isM)return;const data=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(data);let sum=0;for(let i=0;i<data.length;i++)sum+=data[i];const avg=sum/data.length;const vol=Math.min(100,Math.round(avg/128*100));lastVoiceLevel=vol;const level=Math.ceil(vol/10);for(let i=1;i<=10;i++)$('vs'+i)?.classList.toggle('active',i<=level);$('volLabel').textContent='麦克风音量: '+vol+'%';if(vol>10){$('vi').textContent=vol>70?'🔊':vol>40?'🎵':'🎤';$('vt').textContent=vol>70?'大声':vol>40?'适中':'轻声'}else{$('vi').textContent='❓';$('vt').textContent='安静'}micAnimId=requestAnimationFrame(m)}m()}).catch(()=>alert('无法开启麦克风'))}catch(e){alert('无法开启麦克风: '+e.message)}}}
+let micButton=null;
+let recognition=null;
+let isRecognizing=false;
+function toggleM2(){
+    console.log('toggleM2 被调用, isM:', isM);
+    if(!micButton){
+        micButton=document.getElementById('micInputBtn');
+        console.log('获取按钮:', micButton);
+    }
+    const b=$('mmb'),micId=$('micSelect') ? $('micSelect').value : '';
+    
+    if(isM){
+        stopRecognition();
+        if(mic)mic.getTracks().forEach(t=>t.stop());
+        if(micAnimId)cancelAnimationFrame(micAnimId);
+        isM=0;
+        if(b)b.textContent='🎤 开启麦克风';
+        if(b)b.classList.remove('on');
+        if(micButton)micButton.classList.remove('active');
+        lastVoiceLevel=0
+    }else{
+        try{
+            const constraints={audio:true};
+            if(micId)constraints.deviceId={exact:micId};
+            navigator.mediaDevices.getUserMedia(constraints).then(s=>{
+                mic=s;
+                isM=1;
+                if(b)b.textContent='✅ 已开启';
+                if(b)b.classList.add('on');
+                if(micButton)micButton.classList.add('active');
+                console.log('麦克风已开启, 添加 active 类');
+                startRecognition();
+            }).catch(()=>alert('无法开启麦克风'))
+        }catch(e){
+            alert('无法开启麦克风: '+e.message)
+        }
+    }
+}
+
+function startRecognition(){
+    console.log('开始语音识别...');
+    if(!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)){
+        alert('您的浏览器不支持语音识别功能');
+        return;
+    }
+    
+    const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+    recognition=new SpeechRecognition();
+    recognition.continuous=true;
+    recognition.interimResults=true;
+    recognition.lang='zh-CN';
+    
+    recognition.onstart=function(){
+        console.log('语音识别已启动');
+        isRecognizing=true;
+    };
+    
+    recognition.onresult=function(event){
+        let transcript='';
+        for(let i=event.resultIndex;i<event.results.length;i++){
+            transcript+=event.results[i][0].transcript;
+        }
+        if(transcript){
+            console.log('识别结果:', transcript);
+            const input=$('ci2');
+            if(input)input.value=transcript;
+        }
+    };
+    
+    recognition.onerror=function(event){
+        console.error('语音识别错误:', event.error);
+        isRecognizing=false;
+    };
+    
+    recognition.onend=function(){
+        console.log('语音识别结束');
+        isRecognizing=false;
+        if(isM){
+            setTimeout(()=>{
+                if(isM && recognition)recognition.start();
+            },100);
+        }
+    };
+    
+    recognition.start();
+}
+
+function stopRecognition(){
+    if(recognition){
+        recognition.stop();
+        recognition=null;
+    }
+    isRecognizing=false;
+}
 function updateMetrics(scores){console.log('[Metrics] 收到分数:', scores);if(scores){const total=Math.round((scores.emotional_intelligence+scores.response_quality+scores.pressure_handling+scores.cultural_fit)/4);$('val-score').textContent=total;$('bar-score').style.width=total+'%'}else{console.log('[Metrics] 分数为空')}}
 function toggleM(){toggleM2()}
 async function loadDevices(){try{const devs=await navigator.mediaDevices.enumerateDevices();const cams=devs.filter(d=>d.kind==='videoinput');const mics=devs.filter(d=>d.kind==='audioinput');$('camSelect').innerHTML='<option value="">📷 选择摄像头</option>'+cams.map((d,i)=>`<option value="${d.deviceId}">${d.label||'摄像头'+(i+1)}</option>`).join('');$('micSelect').innerHTML='<option value="">🎤 选择麦克风</option>'+mics.map((d,i)=>`<option value="${d.deviceId}">${d.label||'麦克风'+(i+1)}</option>`).join('')}catch(e){}}
-window.onload=()=>{genMems();loadDevices()};
+window.onload=()=>{
+    // 初始化场景选择，确保压力敏感区正确显示
+    renderScenes();
+    genMems();
+    // 找到并选中默认场景，确保压力敏感区和酒局等级正确显示
+    setTimeout(() => {
+        const pressureSectionWrapper = $('pressureSectionWrapper');
+        const banquetLevelWrapper = $('banquetLevelWrapper');
+        
+        if(scene.includes('家庭')){
+            pressureSectionWrapper.style.display = 'block';
+        }
+        
+        if(scene === '商务饭局谈判'){
+            banquetLevelWrapper.style.display = 'block';
+            applySceneInfo(banquetLevelDescriptions[selectedBanquetLevel]);
+        }
+    }, 100);
+    loadDevices();
+};
+</script>
+<!-- 认证模块 -->
+<div id="authModal" class="auth-modal" style="display:none;">
+    <div class="auth-modal-content">
+        <div class="auth-header">
+            <h2 id="authTitle">登录</h2>
+            <span class="auth-close" onclick="closeAuthModal()">&times;</span>
+        </div>
+        <div class="auth-tabs">
+            <button class="auth-tab active" onclick="switchAuthTab('login')">登录</button>
+            <button class="auth-tab" onclick="switchAuthTab('register')">注册</button>
+        </div>
+        <div class="auth-body">
+            <form id="loginForm" class="auth-form">
+                <div class="form-group">
+                    <label>邮箱</label>
+                    <input type="email" id="loginEmail" required placeholder="请输入邮箱">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="loginPassword" required placeholder="请输入密码">
+                </div>
+                <button type="submit" class="auth-btn">登录</button>
+            </form>
+            <form id="registerForm" class="auth-form" style="display:none;">
+                <div class="form-group">
+                    <label>邮箱</label>
+                    <input type="email" id="registerEmail" required placeholder="请输入邮箱">
+                </div>
+                <div class="form-group">
+                    <label>用户名</label>
+                    <input type="text" id="registerUsername" placeholder="请输入用户名（可选）">
+                </div>
+                <div class="form-group">
+                    <label>密码</label>
+                    <input type="password" id="registerPassword" required placeholder="请设置密码（至少 6 位）" minlength="6">
+                </div>
+                <button type="submit" class="auth-btn">注册</button>
+            </form>
+            <div id="authMessage" class="auth-message"></div>
+        </div>
+    </div>
+</div>
+<div id="userDisplay" class="user-display" style="display:none;">
+    <div class="user-info">
+        <span class="user-avatar">👤</span>
+        <span class="user-name" id="userName">用户</span>
+    </div>
+    <button class="logout-btn" onclick="logout()">退出</button>
+</div>
+<style>
+.auth-modal{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000}
+.auth-modal-content{background:#fff;border-radius:16px;width:90%;max-width:420px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}
+.auth-header{padding:24px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center}
+.auth-header h2{margin:0;color:#C8102E;font-size:24px}
+.auth-close{font-size:28px;color:#999;cursor:pointer;line-height:1}
+.auth-close:hover{color:#333}
+.auth-tabs{display:flex;border-bottom:1px solid #e5e7eb}
+.auth-tab{flex:1;padding:16px;background:none;border:none;border-bottom:3px solid transparent;cursor:pointer;font-size:16px;font-weight:600;color:#666;transition:all .3s}
+.auth-tab.active{color:#C8102E;border-bottom-color:#C8102E}
+.auth-tab:hover{color:#C8102E}
+.auth-body{padding:24px}
+.auth-form{display:flex;flex-direction:column;gap:20px}
+.form-group{display:flex;flex-direction:column;gap:8px}
+.form-group label{font-weight:600;color:#333;font-size:14px}
+.form-group input{padding:12px 16px;border:2px solid #e5e7eb;border-radius:8px;font-size:15px;transition:border-color .3s}
+.form-group input:focus{outline:none;border-color:#C8102E}
+.auth-btn{background:#C8102E;color:#fff;border:none;padding:14px;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:all .3s}
+.auth-btn:hover{background:#a00d25;transform:translateY(-2px)}
+.auth-message{margin-top:16px;padding:12px;border-radius:8px;font-size:14px;display:none}
+.auth-message.success{background:#d4edda;color:#155724;border:1px solid #c3e6cb}
+.auth-message.error{background:#f8d7da;color:#721c24;border:1px solid #f5c6cb}
+.user-display{position:absolute;top:20px;right:20px;background:#fff;padding:10px 20px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.1);display:flex;align-items:center;gap:15px}
+.user-info{display:flex;align-items:center;gap:10px}
+.user-avatar{font-size:24px}
+.user-name{font-weight:600;color:#333}
+.logout-btn{background:#f8f9fa;border:2px solid #e5e7eb;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;color:#666;transition:all .3s}
+.logout-btn:hover{background:#e5e7eb;color:#333}
+.login-btn{position:absolute;top:20px;right:20px;padding:10px 20px;background:#C8102E;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;z-index:9999}
+.login-btn:hover{background:#a00d25}
+</style>
+<script>
+let currentUser=null,authToken=null;
+window.addEventListener('DOMContentLoaded',()=>{checkAuthStatus()});
+async function checkAuthStatus(){const token=localStorage.getItem('authToken');if(!token)return;try{const response=await fetch('/api/auth/me',{headers:{'Authorization':`Bearer ${token}`}});const data=await response.json();if(data.success){currentUser=data.user;authToken=token;showUserDisplay();document.getElementById('loginBtn').style.display='none'}else{localStorage.removeItem('authToken')}}catch(error){console.error('检查认证状态失败:',error)}}
+function openAuthModal(){document.getElementById('authModal').style.display='flex'}
+function closeAuthModal(){document.getElementById('authModal').style.display='none';clearAuthMessage()}
+function switchAuthTab(tab){try{const loginForm=document.getElementById('loginForm'),registerForm=document.getElementById('registerForm'),tabs=document.querySelectorAll('.auth-tab');if(tab==='login'){loginForm.style.display='flex';registerForm.style.display='none';if(tabs[0])tabs[0].classList.add('active');if(tabs[1])tabs[1].classList.remove('active');document.getElementById('authTitle').textContent='登录'}else{loginForm.style.display='none';registerForm.style.display='flex';if(tabs[0])tabs[0].classList.remove('active');if(tabs[1])tabs[1].classList.add('active');document.getElementById('authTitle').textContent='注册'}clearAuthMessage()}catch(e){console.error('切换标签失败:',e)}}
+function showAuthMessage(message,type){const msgEl=document.getElementById('authMessage');msgEl.textContent=message;msgEl.className='auth-message';msgEl.classList.add(type);msgEl.style.display='block';console.log('显示消息:',message,type)}
+function clearAuthMessage(){const msgEl=document.getElementById('authMessage');msgEl.style.display='none';msgEl.textContent='';msgEl.className='auth-message'}
+document.getElementById('loginForm').addEventListener('submit',async(e)=>{e.preventDefault();const email=document.getElementById('loginEmail').value,password=document.getElementById('loginPassword').value;try{const response=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});const data=await response.json();if(data.success){authToken=data.uid;localStorage.setItem('authToken',authToken);currentUser=data.user;showAuthMessage('登录成功！','success');showUserDisplay();document.getElementById('loginBtn').style.display='none';setTimeout(()=>{closeAuthModal()},1000)}else{showAuthMessage(data.message,'error')}}catch(error){showAuthMessage('登录失败，请稍后重试','error');console.error('登录错误:',error)}});
+document.getElementById('registerForm').addEventListener('submit',async(e)=>{e.preventDefault();e.stopPropagation();console.log('开始注册...');const email=document.getElementById('registerEmail').value,password=document.getElementById('registerPassword').value,username=document.getElementById('registerUsername').value||null;console.log('注册信息:',{email,username});try{console.log('发送请求...');const response=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password,username})});console.log('响应状态:',response.status);const data=await response.json();console.log('响应数据:',data);if(data.success){authToken=data.uid;localStorage.setItem('authToken',authToken);currentUser=data.user;showAuthMessage('注册成功！','success');showUserDisplay();document.getElementById('loginBtn').style.display='none';setTimeout(()=>{closeAuthModal()},1000)}else{console.log('注册失败:',data.message);showAuthMessage(data.message,'error')}}catch(error){console.error('注册错误:',error);showAuthMessage('注册失败，请稍后重试','error')}});
+function showUserDisplay(){if(!currentUser)return;const userDisplay=document.getElementById('userDisplay'),userName=document.getElementById('userName');userName.textContent=currentUser.username||currentUser.email;userDisplay.style.display='flex'}
+function logout(){currentUser=null;authToken=null;localStorage.removeItem('authToken');document.getElementById('userDisplay').style.display='none';document.getElementById('loginBtn').style.display='block';alert('已退出登录')}
+window.addEventListener('click',(e)=>{const modal=document.getElementById('authModal');if(e.target===modal){closeAuthModal()}});
+
+const tooltip = document.createElement('div');
+tooltip.id = 'customTooltip';
+document.body.appendChild(tooltip);
+
+let currentTooltipElement = null;
+
+document.addEventListener('mouseover', (e) => {
+    const target = e.target.closest('.mc-tooltip');
+    if (target) {
+        currentTooltipElement = target;
+        const tooltipText = target.getAttribute('data-tooltip');
+        if (tooltipText) {
+            tooltip.textContent = tooltipText;
+            tooltip.classList.add('visible');
+        }
+    }
+});
+
+document.addEventListener('mousemove', (e) => {
+    if (tooltip.classList.contains('visible')) {
+        const x = e.clientX + 15;
+        const y = e.clientY + 15;
+        
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const adjustedX = Math.min(x, window.innerWidth - tooltipRect.width - 20);
+        const adjustedY = Math.min(y, window.innerHeight - tooltipRect.height - 20);
+        
+        tooltip.style.left = adjustedX + 'px';
+        tooltip.style.top = adjustedY + 'px';
+    }
+});
+
+document.addEventListener('mouseout', (e) => {
+    const target = e.target.closest('.mc-tooltip');
+    if (target === currentTooltipElement) {
+        tooltip.classList.remove('visible');
+        currentTooltipElement = null;
+    }
+});
 </script>
 </body>
 </html>"""
