@@ -20,8 +20,9 @@ class ProcessResult:
 
 
 class TalkArenaEngine:
-    def __init__(self, llm=None, enable_tts: bool = False):
+    def __init__(self, llm=None, enable_tts: bool = False, use_unified_agent: bool = True):
         from core.agents.multi_agent import MultiAgentOrchestrator
+        from core.agents.unified_agent import UnifiedAgent
         from core.rag.knowledge_base import RAGEngine
         from core.decision.engine import DecisionEngine
         from core.validators.output_validator import OutputValidator
@@ -29,8 +30,13 @@ class TalkArenaEngine:
         self.llm = llm
         self.tts = None
         self.enable_tts = enable_tts
+        self.use_unified_agent = use_unified_agent
 
-        self.multi_agent = MultiAgentOrchestrator(llm)
+        if use_unified_agent:
+            self.unified_agent = UnifiedAgent(llm)
+        else:
+            self.multi_agent = MultiAgentOrchestrator(llm)
+        
         self.rag_engine = RAGEngine()
         self.decision_engine = DecisionEngine()
         self.validators: Dict[str, OutputValidator] = {}
@@ -59,12 +65,12 @@ class TalkArenaEngine:
                 ],
             },
             "interview": {
-                "name": "高压结构化面试",
-                "description": "终面高压追问，强调结构化表达和证据。",
+                "name": "群面竞争场",
+                "description": "多人面试现场，与其他应聘者同台竞争，主面试官在旁观察。",
                 "characters": [
-                    {"name": "主面试官", "avatar": "lead", "bio": "decision quality"},
-                    {"name": "HR", "avatar": "hr", "bio": "fit assessment"},
-                    {"name": "技术负责人", "avatar": "tech", "bio": "technical depth"},
+                    {"name": "竞争者A", "avatar": "competitor_a", "bio": "自信强势"},
+                    {"name": "竞争者B", "avatar": "competitor_b", "bio": "沉稳细致"},
+                    {"name": "竞争者C", "avatar": "competitor_c", "bio": "思维活跃"},
                 ],
             },
             "debate": {
@@ -106,12 +112,13 @@ class TalkArenaEngine:
             "dominance": {"user": 50, "ai": 50},
             "history": [],
             "scores_history": [],
+            "unified_history": [],
         }
         self.validators[sid] = OutputValidator(scenario.get("characters", []))
         return sid
 
     def process_turn(
-        self, session_id: str, user_input: str, multimodal: Optional[Dict] = None
+        self, session_id: str, user_input: str, multimodal: Optional[Dict] = None, is_interrupt: bool = False
     ) -> Generator[ProcessResult, None, None]:
         if session_id not in self.sessions:
             yield ProcessResult("error", error="session_not_found")
@@ -120,123 +127,295 @@ class TalkArenaEngine:
         session = self.sessions[session_id]
         multimodal = multimodal or {}
 
-        yield ProcessResult("stage_analysis", {"message": "analyzing"})
-        analysis = self.decision_engine.analyze_input(
-            user_input,
-            {"dominance": session["dominance"], "turn_count": session["turn_count"]},
-        )
+        if self.use_unified_agent:
+            yield ProcessResult("stage_generation", {"message": "generating"})
+            
+            conversation_history = []
+            for h in session.get("unified_history", []):
+                conversation_history.append(h)
+            
+            result = self.unified_agent.process(
+                scenario_id=session.get("scenario_id", "shandong_dinner"),
+                user_input=user_input,
+                custom_characters=session["scenario"].get("characters", []),
+                conversation_history=conversation_history,
+                is_interrupt=is_interrupt,
+            )
+            
+            if user_input:
+                session["unified_history"].append({
+                    "speaker": "用户",
+                    "text": user_input,
+                    "timestamp_ms": int(__import__("time").time() * 1000),
+                    "is_user": True,
+                })
+            
+            utterances_data = []
+            for u in result.utterances:
+                utterances_data.append({
+                    "npc_id": u.npc_id,
+                    "text": u.text,
+                    "delay_ms": u.delay_ms,
+                })
+                session["unified_history"].append({
+                    "speaker": u.npc_id,
+                    "text": u.text,
+                    "timestamp_ms": int(__import__("time").time() * 1000),
+                    "is_user": False,
+                })
+            
+            session["turn_count"] += 1
+            
+            yield ProcessResult(
+                "complete",
+                {
+                    "utterances": utterances_data,
+                    "should_await_user": result.should_await_user,
+                    "reason": result.reason,
+                    "is_unified_agent": True,
+                },
+            )
+        else:
+            yield ProcessResult("stage_analysis", {"message": "analyzing"})
+            analysis = self.decision_engine.analyze_input(
+                user_input,
+                {"dominance": session["dominance"], "turn_count": session["turn_count"]},
+            )
 
-        yield ProcessResult("stage_rag", {"message": "retrieving"})
-        rag_context = self.rag_engine.enhance_context(
-            user_input, {"intent": analysis["intent"], "topics": analysis["topics"]}
-        )
+            yield ProcessResult("stage_rag", {"message": "retrieving"})
+            rag_context = self.rag_engine.enhance_context(
+                user_input, {"intent": analysis["intent"], "topics": analysis["topics"]}
+            )
 
-        yield ProcessResult("stage_planning", {"message": "planning"})
-        decisions = self.decision_engine.make_decision(
-            {
-                "dominance": session["dominance"],
+            yield ProcessResult("stage_planning", {"message": "planning"})
+            decisions = self.decision_engine.make_decision(
+                {
+                    "dominance": session["dominance"],
+                    "turn_count": session["turn_count"],
+                    "intent": analysis["intent"],
+                    "multimodal": {"available": bool(multimodal)},
+                }
+            )
+
+            yield ProcessResult("stage_generation", {"message": "generating"})
+            conversation_history = []
+            for h in session["history"][-5:]:
+                conversation_history.append({
+                    "user": h.get("user", ""),
+                    "ai": h.get("ai", ""),
+                    "speaker": h.get("speaker", ""),
+                })
+            
+            context = {
+                "user_input": user_input,
+                "scenario_id": session.get("scenario_id", "shandong_dinner"),
+                "characters": session["scenario"].get("characters", []),
                 "turn_count": session["turn_count"],
-                "intent": analysis["intent"],
-                "multimodal": {"available": bool(multimodal)},
+                "dominance": session["dominance"],
+                "multimodal": multimodal,
+                "rag_knowledge": rag_context.get("rag_knowledge", ""),
+                "strategies": analysis["strategies"],
+                "scene_description": session["scenario"].get("description", ""),
+                "user_info": session["scenario"].get("user_info"),
+                "conversation_history": conversation_history,
             }
-        )
+            result = self.multi_agent.process_turn(context)
 
-        yield ProcessResult("stage_generation", {"message": "generating"})
-        context = {
-            "user_input": user_input,
-            "scenario_id": session.get("scenario_id", "shandong_dinner"),
-            "characters": session["scenario"].get("characters", []),
-            "turn_count": session["turn_count"],
-            "dominance": session["dominance"],
-            "multimodal": multimodal,
-            "rag_knowledge": rag_context.get("rag_knowledge", ""),
-            "strategies": analysis["strategies"],
-            "scene_description": session["scenario"].get("description", ""),
-            "user_info": session["scenario"].get("user_info"),
-        }
-        result = self.multi_agent.process_turn(context)
+            validator = self.validators.get(session_id)
+            if validator:
+                result = validator.validate_and_correct(result)
 
-        validator = self.validators.get(session_id)
-        if validator:
-            result = validator.validate_and_correct(result)
+            session["turn_count"] += 1
+            session["dominance"] = result.get("new_dominance", session["dominance"])
+            session["history"].append(
+                {
+                    "user": user_input,
+                    "ai": result.get("ai_response", ""),
+                    "speaker": result.get("speaker"),
+                    "scores": result.get("scores"),
+                    "multimodal": multimodal or {},
+                }
+            )
+            if "scores" in result:
+                session["scores_history"].append(result["scores"])
 
-        session["turn_count"] += 1
-        session["dominance"] = result.get("new_dominance", session["dominance"])
-        session["history"].append(
-            {
-                "user": user_input,
-                "ai": result.get("ai_response", ""),
-                "speaker": result.get("speaker"),
-                "scores": result.get("scores"),
-                "multimodal": multimodal or {},
-            }
-        )
-        if "scores" in result:
-            session["scores_history"].append(result["scores"])
-
-        yield ProcessResult(
-            "complete",
-            {
-                "ai_text": result.get("ai_response", ""),
-                "speaker": result.get("speaker"),
-                "judgment": result.get("judgment", ""),
-                "scores": result.get("scores", {}),
-                "new_dominance": session["dominance"],
-                "game_over": result.get("game_over", False),
-                "analysis": analysis,
-                "decisions": decisions,
-                "rag_used": bool(rag_context.get("rag_knowledge")),
-            },
-        )
+            yield ProcessResult(
+                "complete",
+                {
+                    "ai_text": result.get("ai_response", ""),
+                    "speaker": result.get("speaker"),
+                    "judgment": result.get("judgment", ""),
+                    "scores": result.get("scores", {}),
+                    "new_dominance": session["dominance"],
+                    "game_over": result.get("game_over", False),
+                    "analysis": analysis,
+                    "decisions": decisions,
+                    "rag_used": bool(rag_context.get("rag_knowledge")),
+                    "is_unified_agent": False,
+                },
+            )
 
     def get_rescue_suggestion(self, session_id: str) -> str:
         if session_id not in self.sessions:
             return "会话不存在"
-        session = self.sessions[session_id]
-        last = session["history"][-1] if session["history"] else {}
-        context = {
-            "user_input": last.get("user", ""),
-            "ai_response": last.get("ai", ""),
-            "scenario_id": session.get("scenario_id", "shandong_dinner"),
-            "scene_description": session["scenario"].get("description", ""),
-            "user_info": session["scenario"].get("user_info"),
-            "characters": session["scenario"].get("characters", []),
-            "multimodal": last.get("multimodal", {}),
-            "dominance": session["dominance"],
-            "turn_count": session["turn_count"],
-        }
-        return self.multi_agent.get_rescue_suggestion(context)
+        
+        fallback_suggestions = [
+            "要不咱先喝口茶，慢慢说？",
+            "这个事确实有意思，你怎么看？",
+            "来，咱换个轻松点的话题？",
+            "要不咱先吃点菜，边吃边聊？",
+            "你说的有道理，那接下来呢？",
+        ]
+        
+        import random
+        return random.choice(fallback_suggestions)
 
     def end_session(self, session_id: str) -> Dict[str, Any]:
         if session_id not in self.sessions:
             return {"error": "session_not_found"}
 
         session = self.sessions[session_id]
-        avg_scores: Dict[str, float] = {}
-        if session["scores_history"]:
-            keys = session["scores_history"][0].keys()
-            for key in keys:
-                vals = [s.get(key, 50) for s in session["scores_history"]]
-                avg_scores[key] = sum(vals) / len(vals)
-
-        total = sum(avg_scores.values()) / len(avg_scores) if avg_scores else 50.0
-        medal = self._determine_medal(total)
-        summary = self._generate_summary(session)
-        suggestion = self._generate_suggestion(avg_scores)
-
+        
+        # 生成完整复盘报告
+        report = self._generate_full_report(session)
+        
+        # 清理 session
+        del self.sessions[session_id]
+        
+        return report
+    
+    def _generate_full_report(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        """生成完整的复盘报告，包含五维度评分、综合点评、NPC 内心 OS、改进建议"""
+        from core.prompts import (
+            get_report_scores_prompt,
+            get_report_summary_prompt,
+            get_report_npc_inner_voice_prompt,
+        )
+        import json
+        
+        scene_name = session["scene_name"]
+        npc_list = session["scenario"].get("characters", [])
+        history_log = "\n".join([f"{c.get('name', 'NPC')}: {msg}" for c, msg in session.get("chat_history", [])])
+        turn_count = session.get("turn_count", 0)
+        user_dominance = session["dominance"].get("user", 50)
+        ai_dominance = session["dominance"].get("ai", 50)
+        
+        # 计算结果
+        if user_dominance > 60:
+            result = "🏆 用户胜出"
+            medal_score = 85
+        elif user_dominance < 40:
+            result = "💢 AI 胜出"
+            medal_score = 50
+        else:
+            result = "🤝 势均力敌"
+            medal_score = 70
+        
+        # 1. 生成五维度评分
+        try:
+            scores_prompt = get_report_scores_prompt(
+                scene_name=scene_name,
+                npc_list=json.dumps(npc_list, ensure_ascii=False),
+                history_log=history_log
+            )
+            scores_result = self.llm.generate(scores_prompt, max_new_tokens=200)
+            
+            # 解析 JSON
+            try:
+                scores_data = json.loads(scores_result.strip())
+                metrics = scores_data.get("metrics", {})
+            except:
+                # 解析失败时使用默认值
+                metrics = {"oily": 50, "friendliness": 50, "logic": 50, "humor": 50, "respect": 50}
+        except Exception as e:
+            logger.error(f"生成评分失败：{e}")
+            metrics = {"oily": 50, "friendliness": 50, "logic": 50, "humor": 50, "respect": 50}
+        
+        # 2. 计算总分和勋章
+        total_score = sum(metrics.values()) / len(metrics) if metrics else 50
+        medal = self._determine_medal(total_score)
+        
+        # 3. 生成综合点评
+        try:
+            summary_prompt = get_report_summary_prompt(
+                scene_name=scene_name,
+                npc_list=json.dumps(npc_list, ensure_ascii=False),
+                history_log=history_log,
+                medal=self._get_medal_name(medal)
+            )
+            summary = self.llm.generate(summary_prompt, max_new_tokens=300)
+        except Exception as e:
+            logger.error(f"生成点评失败：{e}")
+            summary = f"{turn_count}轮对话中你的表现为：{result}。"
+        
+        # 4. 生成 NPC 内心 OS 和改进建议
+        npc_os_list = []
+        suggestion = ""
+        try:
+            npc_prompt = get_report_npc_inner_voice_prompt(
+                scene_name=scene_name,
+                npc_list=json.dumps(npc_list, ensure_ascii=False),
+                history_log=history_log,
+                medal=self._get_medal_name(medal)
+            )
+            npc_result = self.llm.generate(npc_prompt, max_new_tokens=400)
+            
+            # 解析 JSON
+            try:
+                npc_data = json.loads(npc_result.strip())
+                npc_os_list = npc_data.get("npc_inner_voice", [])
+                suggestion = npc_data.get("high_light_suggestion", "")
+            except:
+                # 解析失败时使用默认值
+                for char in npc_list:
+                    npc_os_list.append({
+                        "name": char.get("name", "NPC"),
+                        "avatar": char.get("avatar", "👤"),
+                        "os": "表现尚可，继续努力。"
+                    })
+                suggestion = "建议多观察，少说话。"
+        except Exception as e:
+            logger.error(f"生成 NPC 内心 OS 失败：{e}")
+            for char in npc_list:
+                npc_os_list.append({
+                    "name": char.get("name", "NPC"),
+                    "avatar": char.get("avatar", "👤"),
+                    "os": "表现一般。"
+                })
+            suggestion = "建议继续训练提升。"
+        
         return {
-            "scene_name": session["scene_name"],
-            "turn_count": session["turn_count"],
+            "scene_name": scene_name,
+            "turn_count": turn_count,
+            "result": result,
             "medal": medal,
             "scores": {
-                "emotional": round(avg_scores.get("emotional_intelligence", 50)),
-                "reaction": round(avg_scores.get("response_quality", 50)),
-                "total": round(total),
+                "oily": round(metrics.get("oily", 50)),
+                "friendliness": round(metrics.get("friendliness", 50)),
+                "logic": round(metrics.get("logic", 50)),
+                "humor": round(metrics.get("humor", 50)),
+                "respect": round(metrics.get("respect", 50)),
+                "total": round(total_score),
             },
             "summary": summary,
             "suggestion": suggestion,
-            "npc_os_list": self._generate_npc_thoughts(session),
+            "npc_os_list": npc_os_list,
+            "final_dominance": {
+                "user": user_dominance,
+                "ai": ai_dominance,
+            },
         }
+    
+    def _get_medal_name(self, medal: str) -> str:
+        """根据勋章符号返回中文名称"""
+        medal_names = {
+            "🥇": "社交达人",
+            "🥈": "社交能手",
+            "🥉": "社交新手",
+            "📘": "饭桌木头人",
+            "社交拆迁队": "社交拆迁队",
+        }
+        return medal_names.get(medal, "社交新手")
 
     def _determine_medal(self, score: float) -> str:
         if score >= 85:

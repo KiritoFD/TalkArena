@@ -44,3 +44,6 @@ nest-asyncio>=1.5.0
 
 # Storage
 sqlalchemy>=2.0.0
+
+# Firebase Authentication
+firebase-admin>=6.0.0
