@@ -1615,6 +1615,7 @@ function $(id){return document.getElementById(id)}
 
 const dicebearStylePool=['avataaars','pixel-art','lorelei','notionists'];
 const dicebearOptionAllow=new Set(['top','accessories','facialHair','clothing','eyes','eyebrows','mouth','skinColor','hairColor','facialHairColor','accessoriesColor','clothingColor','hatColor']);
+const useExternalDicebear=false;
 
 function hashSeed(str='npc'){
     let h=0;
@@ -1625,10 +1626,108 @@ function pickStyle(seed){
     const idx=hashSeed(seed)%dicebearStylePool.length;
     return dicebearStylePool[idx];
 }
-function normalizeVisualTraits(traits,seed){
-    const normalized={style:pickStyle(seed),options:{}};
+function pickBySeed(seed,list,offset=0){
+    if(!Array.isArray(list)||list.length===0)return '';
+    return list[(hashSeed(seed)+offset)%list.length];
+}
+function inferGender(member){
+    const raw=String(
+        `${member?.gender||member?.sex||''} ${member?.n||member?.name||''} ${member?.r||member?.role||''} ${member?.b||member?.background||''} ${member?.p||member?.personality||''}`
+    ).toLowerCase();
+    if(/female|woman|girl|lady|女|女生|女性|妈妈|阿姨|姐姐|妹妹|大妗子|婶|嫂/.test(raw))return 'female';
+    if(/male|man|boy|gentleman|男|男生|男性|叔|伯|爷|哥哥|弟弟|大舅|表哥|主陪/.test(raw))return 'male';
+    return 'unknown';
+}
+function inferAgeGroup(member){
+    const explicit=Number(member?.age);
+    if(Number.isFinite(explicit)&&explicit>0){
+        if(explicit>=55)return 'senior';
+        if(explicit>=35)return 'middle';
+        return 'young';
+    }
+    const raw=String(
+        `${member?.n||member?.name||''} ${member?.r||member?.role||''} ${member?.b||member?.background||''} ${member?.p||member?.personality||''}`
+    ).toLowerCase();
+    if(/爷|奶|伯|叔|姑父|舅|妗|长辈|senior|elder|主陪/.test(raw))return 'senior';
+    if(/新人|晚辈|学生|实习|候选|junior|intern|student|candidate|表弟|表妹/.test(raw))return 'young';
+    return 'middle';
+}
+function inferIdentity(member){
+    const raw=String(`${member?.r||member?.role||''} ${member?.b||member?.background||''} ${member?.p||member?.personality||''}`).toLowerCase();
+    if(/老板|总|领导|主任|长辈|面试官|评委|甲方|boss|leader|manager|director|主陪|长者/.test(raw))return 'senior';
+    if(/顾问|法务|风控|财务|老师|consult|advisor|legal|risk|观察者/.test(raw))return 'advisor';
+    if(/商务|销售|客户|运营|bd|sales|business|client|operation/.test(raw))return 'business';
+    if(/新人|晚辈|候选|实习|学生|junior|candidate|intern|student|气氛组/.test(raw))return 'junior';
+    if(/技术|研发|程序|工程师|产品|engineer|developer|tech|product/.test(raw))return 'tech';
+    return 'neutral';
+}
+function getSceneProfileOverrides(member){
+    const name=String(member?.n||member?.name||'');
+    const role=String(member?.r||member?.role||'');
+    if(name.includes('大舅')||role.includes('主陪')){
+        return {gender:'male',ageGroup:'senior',identity:'senior',mustache:true,glasses:false,smile:0,hairType:'short'};
+    }
+    if(name.includes('大妗子')||role.includes('观察者')){
+        return {gender:'female',ageGroup:'middle',identity:'advisor',mustache:false,glasses:true,smile:0,hairType:'long'};
+    }
+    if(name.includes('表哥')||role.includes('气氛组')){
+        return {gender:'male',ageGroup:'young',identity:'junior',mustache:false,glasses:false,smile:1,hairType:'short'};
+    }
+    return null;
+}
+function buildIdentityTraits(member,seed){
+    const stableSeed=seed||member?.n||member?.name||'npc';
+    const gender=inferGender(member);
+    const identity=inferIdentity(member);
+    const base={
+        style:'avataaars',
+        options:{
+            top:pickBySeed(stableSeed,['shortHairShortFlat','shortHairTheCaesar','shortHairFrizzle','longHairStraight2','longHairMiaWallace']),
+            accessories:pickBySeed(stableSeed,['none','prescription01','prescription02','round'],3),
+            facialHair:'none',
+            clothing:pickBySeed(stableSeed,['shirtCrewNeck','blazerShirt','blazerSweater','hoodie'],5),
+            eyes:pickBySeed(stableSeed,['default','happy','side','squint'],7),
+            eyebrows:pickBySeed(stableSeed,['default','upDown','raisedExcited','raisedExcitedNatural'],11),
+            mouth:pickBySeed(stableSeed,['default','smile','serious'],13),
+        }
+    };
+    if(gender==='female'){
+        base.options.top=pickBySeed(stableSeed,['longHairStraight2','longHairMiaWallace','longHairBob','longHairCurly']);
+        base.options.facialHair='none';
+    }else if(gender==='male'){
+        base.options.top=pickBySeed(stableSeed,['shortHairShortFlat','shortHairTheCaesar','shortHairDreads02','shortHairShortWaved']);
+        base.options.facialHair=pickBySeed(stableSeed,['none','beardLight','moustacheFancy'],17);
+    }
+    if(identity==='senior'){
+        base.style='avataaars';
+        base.options.clothing=pickBySeed(stableSeed,['blazerShirt','blazerSweater','shirtCrewNeck'],19);
+        base.options.accessories=pickBySeed(stableSeed,['prescription02','prescription01','none'],23);
+        base.options.mouth=pickBySeed(stableSeed,['serious','default','smile'],29);
+    }else if(identity==='advisor'){
+        base.style='avataaars';
+        base.options.accessories=pickBySeed(stableSeed,['prescription01','prescription02','round'],31);
+        base.options.clothing=pickBySeed(stableSeed,['shirtCrewNeck','blazerShirt','shirtScoopNeck'],37);
+    }else if(identity==='business'){
+        base.style='avataaars';
+        base.options.clothing=pickBySeed(stableSeed,['blazerShirt','shirtVNeck','shirtCrewNeck'],41);
+        base.options.eyebrows=pickBySeed(stableSeed,['default','raisedExcited','upDown'],43);
+    }else if(identity==='junior'){
+        base.style='notionists';
+        base.options.clothing=pickBySeed(stableSeed,['hoodie','graphicShirt','shirtCrewNeck'],47);
+        base.options.mouth=pickBySeed(stableSeed,['smile','default','twinkle'],53);
+    }else if(identity==='tech'){
+        base.style='pixel-art';
+        base.options.clothing=pickBySeed(stableSeed,['hoodie','graphicShirt','shirtCrewNeck'],59);
+        base.options.accessories=pickBySeed(stableSeed,['none','round','prescription01'],61);
+    }else{
+        base.style=pickStyle(stableSeed);
+    }
+    return base;
+}
+function normalizeVisualTraits(traits,seed,member){
+    const normalized=buildIdentityTraits(member,seed);
     if(traits&&typeof traits==='object'){
-        if(traits.style)normalized.style=traits.style;
+        if(traits.style)normalized.style=String(traits.style);
         const opts=traits.options||traits.params||{};
         Object.keys(opts||{}).forEach(k=>{
             if(!dicebearOptionAllow.has(k))return;
@@ -1640,9 +1739,9 @@ function normalizeVisualTraits(traits,seed){
     }
     return normalized;
 }
-function buildDicebearUrl(traits,seed){
+function buildDicebearUrl(traits,seed,member){
     const safeSeed=seed||'npc';
-    const normalized=normalizeVisualTraits(traits,safeSeed);
+    const normalized=normalizeVisualTraits(traits,safeSeed,member);
     const params=new URLSearchParams();
     params.set('seed',safeSeed);
     Object.entries(normalized.options).forEach(([k,v])=>params.set(k,v));
@@ -1653,9 +1752,98 @@ function resolveAvatarUrl(member){
     if(member.avatarUrl)return member.avatarUrl;
     const raw=member.avatar||member.a;
     if(raw&&/^https?:\/\//.test(raw))return raw;
-    const traits=member.visualTraits||member.visual_traits||null;
-    if(traits)return buildDicebearUrl(traits,member.n||member.name||'npc');
-    return null;
+    if(useExternalDicebear){
+        const traits=member.visualTraits||member.visual_traits||null;
+        return buildDicebearUrl(traits,member.n||member.name||'npc',member);
+    }
+    return buildFallbackAvatarDataUrl(member);
+}
+function getAvatarInitials(name){
+    const text=String(name||'NPC').trim();
+    if(!text)return 'NP';
+    if(/[\u4e00-\u9fa5]/.test(text)){
+        return text.slice(0,2);
+    }
+    const parts=text.split(/\s+/).filter(Boolean);
+    if(parts.length>=2){
+        return (parts[0][0]+parts[1][0]).toUpperCase();
+    }
+    return text.slice(0,2).toUpperCase();
+}
+function buildFallbackAvatarDataUrl(member){
+    const seed=(member?.n||member?.name||'npc');
+    const profileOverride=getSceneProfileOverrides(member)||{};
+    const identity=profileOverride.identity||inferIdentity(member);
+    const gender=profileOverride.gender||inferGender(member);
+    const ageGroup=profileOverride.ageGroup||inferAgeGroup(member);
+    const h=hashSeed(`${seed}|${identity}|${gender}|${ageGroup}`);
+    const bgPalette=[
+        ['#dbeafe','#bfdbfe'],
+        ['#dcfce7','#bbf7d0'],
+        ['#fef3c7','#fde68a'],
+        ['#f3e8ff','#e9d5ff'],
+        ['#ffe4e6','#fecdd3']
+    ];
+    const skinPalette=['#F4C7A1','#EAB38F','#D79A74','#C68662'];
+    const hairMale=['#1f2937','#374151','#111827','#4b5563'];
+    const hairFemale=['#111827','#3f3f46','#78350f','#4c1d95'];
+    const clothByIdentity={
+        senior:['#334155','#0f172a'],
+        advisor:['#1d4ed8','#2563eb'],
+        business:['#0f766e','#115e59'],
+        junior:['#7c3aed','#6d28d9'],
+        tech:['#0f766e','#0f172a'],
+        neutral:['#475569','#334155']
+    };
+    const bg=bgPalette[h%bgPalette.length];
+    const skin=skinPalette[(h+1)%skinPalette.length];
+    const hair=(gender==='female'?hairFemale:hairMale)[(h+2)%4];
+    const cloth=(clothByIdentity[identity]||clothByIdentity.neutral)[(h+3)%2];
+    const eyeColor=['#111827','#1f2937','#0f172a'][(h+4)%3];
+    const useGlasses=(profileOverride.glasses===true)||((profileOverride.glasses!==false)&&(identity==='advisor'||identity==='senior')&&(h%2===0));
+    const hasBeard=(profileOverride.mustache===true)||((profileOverride.mustache!==false)&&(gender==='male')&&(ageGroup!=='young')&&(h%3===0));
+    const smileLevel=profileOverride.smile===1?1:(profileOverride.smile===0?0:((identity==='business'||identity==='junior')?1:0));
+    const ageWrinkle=ageGroup==='senior';
+    const preferLong=profileOverride.hairType==='long' || (profileOverride.hairType!=='short' && gender==='female');
+    const hairTopPath = preferLong
+        ? "M18,34 C20,14 34,8 48,8 C64,8 78,16 80,34 L80,42 C74,34 66,30 48,30 C32,30 24,34 18,42 Z"
+        : "M20,35 C22,20 34,12 48,12 C62,12 74,20 76,35 L76,40 C69,34 60,32 48,32 C36,32 27,34 20,40 Z";
+    const hairSideFemale = preferLong
+        ? "<path d='M18,40 C16,52 18,66 24,76 L30,76 C24,64 24,52 26,42 Z' fill='"+hair+"' opacity='0.95'/><path d='M78,40 C80,52 78,66 72,76 L66,76 C72,64 72,52 70,42 Z' fill='"+hair+"' opacity='0.95'/>"
+        : "";
+    const mouthPath = smileLevel
+        ? "M40,62 C44,66 52,66 56,62"
+        : "M40,64 C44,62 52,62 56,64";
+    const glassesSvg = useGlasses
+        ? "<rect x='33' y='48' width='11' height='8' rx='2' fill='none' stroke='#334155' stroke-width='1.5'/><rect x='52' y='48' width='11' height='8' rx='2' fill='none' stroke='#334155' stroke-width='1.5'/><line x1='44' y1='52' x2='52' y2='52' stroke='#334155' stroke-width='1.2'/>"
+        : "";
+    const beardSvg = hasBeard
+        ? "<path d='M37,66 C40,74 56,74 59,66 C57,71 39,71 37,66 Z' fill='#374151' opacity='0.85'/>"
+        : "";
+    const wrinkleSvg = ageWrinkle
+        ? "<line x1='36' y1='46' x2='43' y2='46' stroke='#b08968' stroke-width='0.8' opacity='0.6'/><line x1='53' y1='46' x2='60' y2='46' stroke='#b08968' stroke-width='0.8' opacity='0.6'/>"
+        : "";
+    const svg=`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 96 96'>
+<defs><linearGradient id='bg' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='${bg[0]}'/><stop offset='100%' stop-color='${bg[1]}'/></linearGradient></defs>
+<rect x='2' y='2' width='92' height='92' rx='20' fill='url(#bg)'/>
+<ellipse cx='48' cy='94' rx='38' ry='20' fill='${cloth}' opacity='0.18'/>
+<path d='M18,96 C20,78 30,72 48,72 C66,72 76,78 78,96 Z' fill='${cloth}'/>
+<rect x='43' y='66' width='10' height='9' rx='4' fill='${skin}'/>
+<circle cx='27' cy='51' r='4' fill='${skin}'/>
+<circle cx='69' cy='51' r='4' fill='${skin}'/>
+<ellipse cx='48' cy='50' rx='22' ry='24' fill='${skin}'/>
+<path d='${hairTopPath}' fill='${hair}'/>
+${hairSideFemale}
+<circle cx='40' cy='52' r='2.1' fill='${eyeColor}'/>
+<circle cx='56' cy='52' r='2.1' fill='${eyeColor}'/>
+<path d='M36,47 C38,46 42,46 44,47' stroke='#374151' stroke-width='1.4' fill='none' stroke-linecap='round'/>
+<path d='M52,47 C54,46 58,46 60,47' stroke='#374151' stroke-width='1.4' fill='none' stroke-linecap='round'/>
+<path d='${mouthPath}' stroke='#7f1d1d' stroke-width='1.5' fill='none' stroke-linecap='round'/>
+${glassesSvg}
+${beardSvg}
+${wrinkleSvg}
+</svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 function renderAvatarMarkup(member,wrapperClass){
     const url=resolveAvatarUrl(member);
@@ -1666,7 +1854,7 @@ function renderAvatarMarkup(member,wrapperClass){
     return `<div class="${wrapperClass} avatar-emoji">${emoji}</div>`;
 }
 function renderInlineAvatar(avatar,name){
-    if(avatar&&/^https?:\/\//.test(avatar)){
+    if(avatar&&/^(https?:\/\/|data:image\/)/.test(avatar)){
         return `<img src="${avatar}" alt="${name||'avatar'}" style="width:24px;height:24px;border-radius:50%;object-fit:cover;">`;
     }
     return `<span>${avatar||'👤'}</span>`;
@@ -1674,7 +1862,7 @@ function renderInlineAvatar(avatar,name){
 function ensureMemberVisuals(member){
     if(!member)return member;
     if(!member.visualTraits){
-        member.visualTraits={style:pickStyle(member.n||member.name||'npc'),options:{}};
+        member.visualTraits=buildIdentityTraits(member,member.n||member.name||'npc');
     }
     if(!member.avatar&&member.a)member.avatar=member.a;
     member.avatarUrl=resolveAvatarUrl(member);
@@ -1687,6 +1875,8 @@ function mapAICharacter(c){
         n:c.name||'NPC',
         r:c.role||'',
         b:c.background||c.personality||'未知',
+        p:c.personality||'',
+        gender:c.gender||c.sex||'',
         visualTraits:c.visualTraits||c.visual_traits||null
     };
     return ensureMemberVisuals(member);
@@ -2354,6 +2544,8 @@ async function randMem() {
                         n: d.data.user_identity.name || '你',
                         r: d.data.user_identity.role || '参与者',
                         b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。',
+                        p: d.data.user_identity.personality || '',
+                        gender: d.data.user_identity.gender || d.data.user_identity.sex || '',
                         visualTraits: d.data.user_identity.visualTraits || d.data.user_identity.visual_traits || null
                     });
                 } else {
@@ -2452,6 +2644,8 @@ async function regenerateScene() {
                             n: d.data.user_identity.name || '你',
                             r: d.data.user_identity.role || '参与者',
                             b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。',
+                            p: d.data.user_identity.personality || '',
+                            gender: d.data.user_identity.gender || d.data.user_identity.sex || '',
                             visualTraits: d.data.user_identity.visualTraits || d.data.user_identity.visual_traits || null
                         });
                     } else {
