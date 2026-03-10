@@ -5,6 +5,7 @@ TalkArena FastAPI 服务端
 
 import sys
 import os
+import importlib.util
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -17,14 +18,15 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict
 
 app = FastAPI(title="TalkArena")
+MULTIPART_AVAILABLE = importlib.util.find_spec("multipart") is not None
 
 # 引入认证路由
 try:
     from core.auth.auth_routes import router as auth_router
     app.include_router(auth_router)
-    print("✓ 认证路由已加载")
+    print("[Auth] routes loaded")
 except Exception as e:
-    print(f"⚠ 认证路由加载失败：{e}")
+    print(f"[Auth] routes load skipped: {e}")
 
 engine = None
 mm_analyzer = None
@@ -439,29 +441,37 @@ async def mm_analyze(req: MMReq):
         return {"success": False, "error": str(e)}
 
 
-@app.post("/api/stt")
-async def stt(file: UploadFile = File(...)):
-    try:
-        audio_bytes = await file.read()
-        service = get_stt_service()
-        result = service.transcribe(audio_bytes)
-        analyzer = get_mm_analyzer()
-        mm_result = analyzer.analyze_multimodal(
-            text=result.get("text", ""),
-            emotion_features=None,
-            voice_features=result.get("voice_features"),
-        )
+if MULTIPART_AVAILABLE:
+    @app.post("/api/stt")
+    async def stt(file: UploadFile = File(...)):
+        try:
+            audio_bytes = await file.read()
+            service = get_stt_service()
+            result = service.transcribe(audio_bytes)
+            analyzer = get_mm_analyzer()
+            mm_result = analyzer.analyze_multimodal(
+                text=result.get("text", ""),
+                emotion_features=None,
+                voice_features=result.get("voice_features"),
+            )
+            return {
+                "success": True,
+                "data": {
+                    "text": result.get("text", ""),
+                    "voice_features": result.get("voice_features", {}),
+                    "emotion_state": mm_result.get("emotion_state"),
+                    "behavior_cues": mm_result.get("behavior_cues"),
+                },
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+else:
+    @app.post("/api/stt")
+    async def stt_unavailable():
         return {
-            "success": True,
-            "data": {
-                "text": result.get("text", ""),
-                "voice_features": result.get("voice_features", {}),
-                "emotion_state": mm_result.get("emotion_state"),
-                "behavior_cues": mm_result.get("behavior_cues"),
-            },
+            "success": False,
+            "error": "STT is unavailable: python-multipart is not installed in this deployment.",
         }
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
 
 @app.post("/api/tts")
