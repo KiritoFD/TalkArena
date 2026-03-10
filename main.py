@@ -9,15 +9,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 import base64
 from pydantic import BaseModel
 from typing import List, Optional, Dict
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
 
 app = FastAPI(title="TalkArena")
 
@@ -31,6 +28,8 @@ except Exception as e:
 
 engine = None
 mm_analyzer = None
+stt_service = None
+tts_service = None
 
 
 class _MockResult:
@@ -160,6 +159,24 @@ def get_mm_analyzer():
     return mm_analyzer
 
 
+def get_stt_service():
+    global stt_service
+    if stt_service is None:
+        from core.stt_local import LocalSTTService
+
+        stt_service = LocalSTTService()
+    return stt_service
+
+
+def get_tts_service():
+    global tts_service
+    if tts_service is None:
+        from core.tts_local import LocalTTSService
+
+        tts_service = LocalTTSService()
+    return tts_service
+
+
 class ChatReq(BaseModel):
     session_id: str
     message: str = ""
@@ -196,6 +213,11 @@ class InterviewQuestionReq(BaseModel):
 class ContentOptimizeReq(BaseModel):
     content: str
     scene_type: str
+
+
+class TTSReq(BaseModel):
+    text: str
+    emotion: Optional[str] = "neutral"
 
 
 @app.get("/favicon.ico")
@@ -297,10 +319,19 @@ async def send_msg(req: ChatReq):
 
     try:
         multimodal = req.multimodal or {}
+        mm_result = None
+        if multimodal:
+            try:
+                mm_result = get_mm_analyzer().process_turn(req.message, multimodal)
+            except Exception:
+                mm_result = None
         print(f"[API] 收到多模态数据: {multimodal}")
         for result in eng.process_turn(req.session_id, req.message, multimodal, is_interrupt=False):
             if result.stage == "complete":
-                return {"success": True, "data": result.data}
+                payload = result.data or {}
+                if mm_result:
+                    payload["multimodal_analysis"] = mm_result
+                return {"success": True, "data": payload}
 
         return {"success": False, "error": "处理失败"}
     except Exception as e:
@@ -408,6 +439,47 @@ async def mm_analyze(req: MMReq):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/stt")
+async def stt(file: UploadFile = File(...)):
+    try:
+        audio_bytes = await file.read()
+        service = get_stt_service()
+        result = service.transcribe(audio_bytes)
+        analyzer = get_mm_analyzer()
+        mm_result = analyzer.analyze_multimodal(
+            text=result.get("text", ""),
+            emotion_features=None,
+            voice_features=result.get("voice_features"),
+        )
+        return {
+            "success": True,
+            "data": {
+                "text": result.get("text", ""),
+                "voice_features": result.get("voice_features", {}),
+                "emotion_state": mm_result.get("emotion_state"),
+                "behavior_cues": mm_result.get("behavior_cues"),
+            },
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/tts")
+async def tts(req: TTSReq):
+    try:
+        service = get_tts_service()
+        audio_bytes = service.synthesize(req.text, req.emotion or "neutral")
+        if not audio_bytes:
+            return {"success": False, "error": "TTS failed"}
+        filename = f"tts_{int(__import__('time').time() * 1000)}.wav"
+        out_path = os.path.join("outputs", "audio", filename)
+        with open(out_path, "wb") as f:
+            f.write(audio_bytes)
+        return {"success": True, "data": {"url": f"/audio/{filename}"}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/knowledge/search")
 async def search_knowledge(query: str):
     """RAG知识库搜索"""
@@ -453,8 +525,8 @@ async def generate_scenario(req: ScenarioGenerateReq):
 同时，请为用户指定一个身份，用户身份应符合年轻人群体，例如：晚辈、年轻人、刚工作的新人等。
 
 请以JSON格式输出，包含以下字段：
-- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
-- user_identity: 用户身份信息，包含name、role、personality、background、avatar字段
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
+- user_identity: 用户身份信息，包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
 """
             else:
                 prompt = f"""
@@ -473,8 +545,8 @@ async def generate_scenario(req: ScenarioGenerateReq):
 
 请以JSON格式输出，包含以下字段：
 - description: 场景描述
-- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
-- user_identity: 用户身份信息，包含name、role、personality、background、avatar字段
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
+- user_identity: 用户身份信息，包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
 """
         elif req.scene_type == "interview":
             if req.only_characters:
@@ -490,7 +562,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
 请确保生成的内容符合群面竞争场景，角色设定鲜明，是与用户同台竞争的应聘者。
 
 请以JSON格式输出，包含以下字段：
-- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
 """
             else:
                 prompt = f"""
@@ -508,7 +580,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
 
 请以JSON格式输出，包含以下字段：
 - description: 场景描述
-- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
 """
         elif req.scene_type == "debate":
             if req.only_characters:
@@ -524,7 +596,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
 请确保生成的内容符合辩论场景特点，角色设定鲜明，背景故事合理。
 
 请以JSON格式输出，包含以下字段：
-- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
 """
             else:
                 prompt = f"""
@@ -542,7 +614,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
 
 请以JSON格式输出，包含以下字段：
 - description: 场景描述
-- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段
+- characters: 成员列表，每个成员包含name、role、personality、background、avatar字段、visualTraits字段（DiceBear捏脸参数，包含style与options）
 """
         else:
             return {"success": False, "error": "不支持的场景类型"}
@@ -659,8 +731,8 @@ async def regenerate_scenario(req: ScenarioGenerateReq):
 
 请以 JSON 格式输出，包含以下字段：
 - description: 场景描述
-- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
-- user_identity: 用户身份信息，包含 name、role、personality、background、avatar 字段
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段、visualTraits 字段（DiceBear捏脸参数，包含 style 与 options）
+- user_identity: 用户身份信息，包含 name、role、personality、background、avatar 字段、visualTraits 字段（DiceBear捏脸参数，包含 style 与 options）
 """
             else:
                 prompt = f"""
@@ -680,8 +752,8 @@ async def regenerate_scenario(req: ScenarioGenerateReq):
 
 请以 JSON 格式输出，包含以下字段：
 - description: 场景描述
-- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
-- user_identity: 用户身份信息，包含 name、role、personality、background、avatar 字段
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段、visualTraits 字段（DiceBear捏脸参数，包含 style 与 options）
+- user_identity: 用户身份信息，包含 name、role、personality、background、avatar 字段、visualTraits 字段（DiceBear捏脸参数，包含 style 与 options）
 """
         elif req.scene_type == "interview":
             prompt = f"""
@@ -700,7 +772,7 @@ async def regenerate_scenario(req: ScenarioGenerateReq):
 
 请以 JSON 格式输出，包含以下字段：
 - description: 场景描述
-- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段、visualTraits 字段（DiceBear捏脸参数，包含 style 与 options）
 """
         elif req.scene_type == "debate":
             prompt = f"""
@@ -719,7 +791,7 @@ async def regenerate_scenario(req: ScenarioGenerateReq):
 
 请以 JSON 格式输出，包含以下字段：
 - description: 场景描述
-- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段
+- characters: 成员列表，每个成员包含 name、role、personality、background、avatar 字段、visualTraits 字段（DiceBear捏脸参数，包含 style 与 options）
 """
         else:
             return {"success": False, "error": "不支持的场景类型"}
@@ -902,8 +974,8 @@ async def list_scenarios():
     return {"success": True, "data": scenarios}
 
 
-if os.path.isdir("outputs/audio"):
-    app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
+os.makedirs("outputs/audio", exist_ok=True)
+app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
 if os.path.isdir("assets"):
     app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
@@ -954,7 +1026,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .mg{display:flex;gap:18px;margin-bottom:20px}
 .mc{flex:1;padding:20px;background:#fff;border:2px solid #E5E7EB;border-radius:12px;text-align:center;transition:all .2s;min-height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .mc:hover{border-color:#C8102E;transform:translateY(-2px);box-shadow:0 4px 15px rgba(0,0,0,.1)}
-.ma{font-size:48px;margin-bottom:10px}
+.ma{width:64px;height:64px;border-radius:18px;background:linear-gradient(160deg,#f4f7ff,#e6efff);display:flex;align-items:center;justify-content:center;margin-bottom:10px;overflow:hidden;box-shadow:inset 0 -6px 12px rgba(66,104,174,.12)}
+.ma img{width:100%;height:100%;object-fit:cover}
+.ma.avatar-emoji{font-size:40px;line-height:1}
 .mn{font-weight:bold;font-size:16px;margin-bottom:8px;color:#333}
 .mr{font-size:13px;color:#666;margin-top:5px}
 .mc-tooltip{position:relative}
@@ -991,6 +1065,31 @@ select:focus{outline:none;border-color:#667eea}
 .rescue-fab{position:fixed;right:30px;bottom:120px;width:70px;height:70px;border-radius:50%;background:linear-gradient(135deg,#5B6BF9,#7C8CFF);color:#fff;border:none;cursor:pointer;font-size:14px;font-weight:700;box-shadow:0 8px 25px rgba(91,107,249,.4);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:all .3s}
 .rescue-fab:hover{transform:translateY(-3px) scale(1.05);box-shadow:0 12px 35px rgba(91,107,249,.5)}
 .rescue-fab:active{transform:translateY(-1px) scale(1.02)}
+
+.voice-toggle{padding:8px 14px;border-radius:10px;border:2px solid #e2e8f0;background:#fff;color:#0f172a;font-weight:700;cursor:pointer;transition:all .2s}
+.voice-toggle.on{background:#111827;border-color:#111827;color:#fff;box-shadow:0 8px 18px rgba(17,24,39,.25)}
+.voice-toggle:hover{transform:translateY(-1px)}
+
+.profile-wrap{max-width:1100px;margin:0 auto;padding:28px}
+.profile-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
+.profile-title{font-size:24px;font-weight:900;color:#111827}
+.profile-sub{font-size:13px;color:#6b7280}
+.profile-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:14px 0 20px}
+.profile-stat{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:16px;box-shadow:0 8px 20px rgba(15,23,42,.06)}
+.profile-stat h4{margin:0 0 8px 0;font-size:13px;color:#64748b}
+.profile-stat .stat-val{font-size:22px;font-weight:900;color:#111827}
+.profile-tabs{display:flex;gap:10px;overflow-x:auto;padding:6px 2px;margin-bottom:14px}
+.profile-tab{white-space:nowrap;padding:8px 14px;border-radius:999px;border:1px solid #e2e8f0;background:#fff;color:#334155;font-weight:700;cursor:pointer}
+.profile-tab.active{background:#2563eb;border-color:#2563eb;color:#fff;box-shadow:0 8px 18px rgba(37,99,235,.3)}
+.report-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.report-card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:14px;box-shadow:0 8px 18px rgba(15,23,42,.06);display:flex;flex-direction:column;gap:10px}
+.report-card h5{margin:0;font-size:15px;color:#111827}
+.report-card p{margin:0;font-size:13px;line-height:1.5;color:#4b5563}
+.report-card .view-btn{margin-top:auto;padding:8px 10px;border-radius:10px;border:none;background:#111827;color:#fff;font-weight:700;cursor:pointer}
+.view-btn{padding:8px 12px;border-radius:10px;border:none;background:#111827;color:#fff;font-weight:700;cursor:pointer}
+.dist-row{display:flex;justify-content:space-between;font-size:12px;color:#475569;padding:4px 0;border-bottom:1px dashed #e5e7eb}
+.dist-row:last-child{border-bottom:none}
+.report-empty{background:#f8fafc;border:1px dashed #cbd5f5;border-radius:14px;padding:22px;color:#6b7280;text-align:center}
 
 .interrupt-fab{position:fixed;right:30px;bottom:210px;width:70px;height:70px;border-radius:50%;background:linear-gradient(135deg,#FF9800,#FFB74D);color:#fff;border:none;cursor:pointer;font-size:14px;font-weight:700;box-shadow:0 8px 25px rgba(255,152,0,.4);z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transition:all .3s}
 .interrupt-fab:hover{transform:translateY(-3px) scale(1.05);box-shadow:0 12px 35px rgba(255,152,0,.5)}
@@ -1177,7 +1276,9 @@ select:focus{outline:none;border-color:#667eea}
 #p3 .ci.state-reacting::before{background:#5e9dff}
 #p3 .ci.state-listening::before{background:#39a96b}
 #p3 .ci .head{width:68px;height:68px;border-radius:20px;background:linear-gradient(160deg,#ecf2ff 0%,#dae8ff 100%);border:1px solid #c5d9ff;box-shadow:inset 0 -8px 14px rgba(66,104,174,.18),0 5px 12px rgba(15,23,42,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0;position:relative}
-#p3 .ci .avatar-main{font-size:36px;line-height:1;filter:drop-shadow(0 2px 2px rgba(0,0,0,.2));transition:transform .2s ease,filter .2s ease}
+#p3 .ci .avatar-main{width:44px;height:44px;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#fff;filter:drop-shadow(0 2px 2px rgba(0,0,0,.2));transition:transform .2s ease,filter .2s ease}
+#p3 .ci .avatar-main img{width:100%;height:100%;object-fit:cover}
+#p3 .ci .avatar-main.avatar-emoji{font-size:36px;line-height:1}
 #p3 .ci .avatar-exp{position:absolute;right:-5px;bottom:-5px;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid #d9e6ff;box-shadow:0 3px 8px rgba(0,0,0,.15);font-size:14px}
 #p3 .ci .npc-meta{display:flex;flex-direction:column;gap:2px}
 #p3 .ci .cn{font-size:20px;font-weight:900;color:#252932;line-height:1}
@@ -1353,6 +1454,7 @@ select:focus{outline:none;border-color:#667eea}
 </div>
 </div>
 <div class="hr">
+<button class="voice-toggle" id="npcVoiceToggle" onclick="toggleNpcVoice()">NPC语音: 关</button>
 <button class="eb" onclick="end()">结束</button>
 </div>
 </div>
@@ -1401,11 +1503,31 @@ select:focus{outline:none;border-color:#667eea}
 <div style="text-align:center;padding:8px;background:#f8f9fa;border-radius:8px"><span id="ei">❓</span><div style="font-size:10px;color:#666;margin-top:2px">表情</div><div id="et" style="font-size:11px;color:#333">未检测</div></div>
 </div>
 </div>
+<div style="margin-top:14px;">
+    <div class="mt">🎤 麦克风</div>
+    <select id="micSelect"><option value="">🎤 选择麦克风</option></select>
+    <button id="mmb" onclick="toggleM()">🎤 开始录音</button>
+    <div id="micStatus" style="margin-top:8px;font-size:12px;color:#666;">未录音</div>
+    <div id="voiceEmotion" style="margin-top:6px;font-size:12px;color:#333;">语音情感: --</div>
+</div>
 <button class="interrupt-fab" id="interruptBtn" onclick="interrupt()" style="display:none;">⏸️ 打断</button>
 <button class="rescue-fab" onclick="rescue()">💡 救场</button>
 </div>
 
 <div id="p4" class="page"><div class="rc" id="rc"></div></div>
+<div id="p5" class="page">
+    <div class="profile-wrap">
+        <div class="profile-head">
+            <button class="bb" onclick="goBackFromProfile()">返回</button>
+            <div>
+                <div class="profile-title">个人中心</div>
+                <div class="profile-sub" id="profileSub">历史对话报告</div>
+            </div>
+            <div></div>
+        </div>
+        <div id="profileContent"></div>
+    </div>
+</div>
 
 <script>
 let sid=null,scene='家庭饭桌试炼',mems=[],chars=[],hist=[],cam=null,mic=null,isC=0,isM=0;
@@ -1421,6 +1543,8 @@ let isFirstMicClick=true;
 let isNPCSpeaking=false;
 let pendingUtterances=[];
 let shouldAwaitUser=true;
+let profileSceneActive=null;
+let lastPageBeforeProfile='p1';
 const pool={
 "家庭饭桌试炼":{id:"shandong_dinner",icon:"🍜",members:[
 {a:"👴",n:"大舅",r:"主陪·长辈",b:"看重礼数与体面，善于在热闹中施压"},
@@ -1488,6 +1612,136 @@ let selectedBanquetLevel='formal';
 let drinkingCapacity=0;
 const scenes=Object.keys(pool);
 function $(id){return document.getElementById(id)}
+
+const dicebearStylePool=['avataaars','pixel-art','lorelei','notionists'];
+const dicebearOptionAllow=new Set(['top','accessories','facialHair','clothing','eyes','eyebrows','mouth','skinColor','hairColor','facialHairColor','accessoriesColor','clothingColor','hatColor']);
+
+function hashSeed(str='npc'){
+    let h=0;
+    for(let i=0;i<str.length;i++){h=((h<<5)-h)+str.charCodeAt(i);h|=0}
+    return Math.abs(h);
+}
+function pickStyle(seed){
+    const idx=hashSeed(seed)%dicebearStylePool.length;
+    return dicebearStylePool[idx];
+}
+function normalizeVisualTraits(traits,seed){
+    const normalized={style:pickStyle(seed),options:{}};
+    if(traits&&typeof traits==='object'){
+        if(traits.style)normalized.style=traits.style;
+        const opts=traits.options||traits.params||{};
+        Object.keys(opts||{}).forEach(k=>{
+            if(!dicebearOptionAllow.has(k))return;
+            const v=opts[k];
+            if(v!==null&&v!==undefined&&String(v).trim()!==''){
+                normalized.options[k]=String(v);
+            }
+        });
+    }
+    return normalized;
+}
+function buildDicebearUrl(traits,seed){
+    const safeSeed=seed||'npc';
+    const normalized=normalizeVisualTraits(traits,safeSeed);
+    const params=new URLSearchParams();
+    params.set('seed',safeSeed);
+    Object.entries(normalized.options).forEach(([k,v])=>params.set(k,v));
+    return `https://api.dicebear.com/7.x/${normalized.style}/svg?${params.toString()}`;
+}
+function resolveAvatarUrl(member){
+    if(!member)return null;
+    if(member.avatarUrl)return member.avatarUrl;
+    const raw=member.avatar||member.a;
+    if(raw&&/^https?:\/\//.test(raw))return raw;
+    const traits=member.visualTraits||member.visual_traits||null;
+    if(traits)return buildDicebearUrl(traits,member.n||member.name||'npc');
+    return null;
+}
+function renderAvatarMarkup(member,wrapperClass){
+    const url=resolveAvatarUrl(member);
+    if(url){
+        return `<div class="${wrapperClass}"><img src="${url}" alt="${member?.n||member?.name||'avatar'}"></div>`;
+    }
+    const emoji=member?.a||member?.avatar||'🙂';
+    return `<div class="${wrapperClass} avatar-emoji">${emoji}</div>`;
+}
+function renderInlineAvatar(avatar,name){
+    if(avatar&&/^https?:\/\//.test(avatar)){
+        return `<img src="${avatar}" alt="${name||'avatar'}" style="width:24px;height:24px;border-radius:50%;object-fit:cover;">`;
+    }
+    return `<span>${avatar||'👤'}</span>`;
+}
+function ensureMemberVisuals(member){
+    if(!member)return member;
+    if(!member.visualTraits){
+        member.visualTraits={style:pickStyle(member.n||member.name||'npc'),options:{}};
+    }
+    if(!member.avatar&&member.a)member.avatar=member.a;
+    member.avatarUrl=resolveAvatarUrl(member);
+    return member;
+}
+function mapAICharacter(c){
+    const member={
+        a:c.avatar||'👤',
+        avatar:c.avatar||'👤',
+        n:c.name||'NPC',
+        r:c.role||'',
+        b:c.background||c.personality||'未知',
+        visualTraits:c.visualTraits||c.visual_traits||null
+    };
+    return ensureMemberVisuals(member);
+}
+
+let npcVoiceEnabled=false;
+let npcAudioQueue=[];
+let npcAudioPlaying=false;
+let npcAudio=null;
+function updateNpcVoiceButton(){
+    const btn=$('npcVoiceToggle');
+    if(!btn)return;
+    btn.classList.toggle('on',npcVoiceEnabled);
+    btn.textContent=npcVoiceEnabled?'NPC语音: 开':'NPC语音: 关';
+}
+function stopNpcVoice(){
+    npcAudioQueue=[];
+    npcAudioPlaying=false;
+    if(npcAudio){
+        npcAudio.pause();
+        npcAudio.currentTime=0;
+    }
+}
+function toggleNpcVoice(){
+    npcVoiceEnabled=!npcVoiceEnabled;
+    if(!npcVoiceEnabled)stopNpcVoice();
+    updateNpcVoiceButton();
+}
+function queueNpcAudio(url){
+    if(!url)return;
+    npcAudioQueue.push(url);
+    if(!npcAudioPlaying)playNextNpcAudio();
+}
+function playNextNpcAudio(){
+    if(!npcVoiceEnabled){npcAudioQueue=[];return;}
+    const url=npcAudioQueue.shift();
+    if(!url){npcAudioPlaying=false;return;}
+    npcAudioPlaying=true;
+    npcAudio=new Audio(url);
+    npcAudio.onended=()=>{npcAudioPlaying=false;playNextNpcAudio()};
+    npcAudio.onerror=()=>{npcAudioPlaying=false;playNextNpcAudio()};
+    npcAudio.play().catch(()=>{npcAudioPlaying=false;playNextNpcAudio()});
+}
+async function speakNPC(text,emotion){
+    if(!npcVoiceEnabled)return;
+    const clean=String(text||'').replace(/^\s*[^：:]{1,6}[：:]\s*/,'').trim();
+    if(!clean)return;
+    try{
+        const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:clean,emotion:emotion||'neutral'})});
+        const d=await r.json();
+        if(d.success&&d.data&&d.data.url){
+            queueNpcAudio(d.data.url);
+        }
+    }catch(e){}
+}
 
 function setDrinkingCapacity(score){
     drinkingCapacity=score;
@@ -1652,8 +1906,15 @@ function refreshSceneInfoForSelection(){
     sceneInfoTitle.textContent='背景信息';
     aiCustomizeBtn.style.display='none';
 }
-function detectEmotion(t){if(!t)return'😐';const lower=t.toLowerCase();if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
-function buildHeadCard(c){return `<div class="ci state-idle look-user expr-neutral" data-n="${c.n}"><div class="head"><span class="avatar-main">${c.a||'🙂'}</span><span class="avatar-exp">😐</span></div><div class="npc-meta"><div class="cn">${c.n}</div><div class="role">${c.r||''}</div><div class="mood-pill">平静</div></div></div>`}
+function detectEmotionLabel(t){
+    if(!t)return'neutral';
+    if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'happy';
+    if(/[尴尬|不好意思|抱歉|难过]/i.test(t))return'sad';
+    if(/[不行|不能|不喝|生气|别闹]/i.test(t))return'angry';
+    return'neutral';
+}
+function detectEmotion(t){if(!t)return'😐';if(/[哈哈|高兴|开心|好|不错]/i.test(t))return'😊';if(/[谢谢|感谢|感激]/i.test(t))return'🙏';if(/[尴尬|不好意思|抱歉]/i.test(t))return'😳';if(/[不行|不能|不喝]/i.test(t))return'😤';if(/[干|喝|走一个]/i.test(t))return'🍺';return'😐'}
+function buildHeadCard(c){const m=ensureMemberVisuals(c);return `<div class="ci state-idle look-user expr-neutral" data-n="${m.n}"><div class="head">${renderAvatarMarkup(m,'avatar-main')}<span class="avatar-exp">😐</span></div><div class="npc-meta"><div class="cn">${m.n}</div><div class="role">${m.r||''}</div><div class="mood-pill">平静</div></div></div>`}
 function setRenderState(name,patch={}){if(!npcRenderState[name])npcRenderState[name]={state:'idle',look:'user',backchannel:''};Object.assign(npcRenderState[name],patch)}
 function _resolveExpression(st){
     if(st.state==='speaking')return {key:'engaged',label:'发言中',emoji:'🗣️'};
@@ -1686,6 +1947,7 @@ function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.fo
 function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;blinkRandom()},1400)}
 function goBackFromGame(){
     if(confirm('返回将清除当前对话记录，确定要返回吗？')){
+        stopNpcVoice();
         sid=null;
         hist=[];
         pendingUtterances=[];
@@ -1863,31 +2125,34 @@ function renderScenes(){$('sg').innerHTML=scenes.map(s=>{
 }).join('')}
 function renderMems(){
     // 使用动态用户信息，如果未设置则使用默认值
-    const userInfo = window.userInfo || {
+    const userInfo = ensureMemberVisuals(window.userInfo || {
         a: '👨‍💼',
         n: '你',
         r: '参与者',
         b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
-    };
+    });
+    window.userInfo=userInfo;
     
     const userMember = `<div class="mc mc-tooltip" style="border:2px solid #4A90E2;background:#E3F2FD;position:relative;cursor:pointer" data-tooltip="${userInfo.b}">
         <div style="position:absolute;top:-10px;right:-10px;width:60px;height:60px;background:#2196F3;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;transform:rotate(15deg);box-shadow:0 2px 5px rgba(0,0,0,0.2);z-index:10;">你的角色</div>
         <div style="position:absolute;top:5px;right:5px;cursor:pointer;font-size:16px;" onclick="editMember('user')">✏️</div>
-        <div class="ma">${userInfo.a}</div>
+        ${renderAvatarMarkup(userInfo,'ma')}
         <div class="mn" style="color:#2196F3;">${userInfo.n}</div>
         <div style="background:#2196F3;color:#fff;padding:4px 8px;border-radius:10px;font-size:12px;margin:5px 0;">${userInfo.r}</div>
         <div style="font-size:13px;color:#666;line-height:1.4;">${userInfo.b.substring(0, 50)}${userInfo.b.length > 50 ? '...' : ''}</div>
     </div>`;
     
-    $('mg').innerHTML=mems.map((m,i)=>`
-        <div class="mc mc-tooltip" style="position:relative;cursor:pointer" data-tooltip="${m.b || m.personality || '无详细信息'}">
+    $('mg').innerHTML=mems.map((m,i)=>{
+        const member=ensureMemberVisuals(m);
+        return `
+        <div class="mc mc-tooltip" style="position:relative;cursor:pointer" data-tooltip="${member.b || member.personality || '无详细信息'}">
             <div style="position:absolute;top:5px;right:5px;cursor:pointer;font-size:16px;" onclick="editMember(${i})">✏️</div>
-            <div class="ma">${m.a}</div>
-            <div class="mn">${m.n}</div>
-            <div style="background:#E3F2FD;color:#2196F3;padding:4px 8px;border-radius:10px;font-size:12px;margin:5px 0;">${m.r}</div>
-            <div style="font-size:13px;color:#666;line-height:1.4;">${(m.b || m.personality || '无详细信息').substring(0, 50)}${(m.b || m.personality || '').length > 50 ? '...' : ''}</div>
+            ${renderAvatarMarkup(member,'ma')}
+            <div class="mn">${member.n}</div>
+            <div style="background:#E3F2FD;color:#2196F3;padding:4px 8px;border-radius:10px;font-size:12px;margin:5px 0;">${member.r}</div>
+            <div style="font-size:13px;color:#666;line-height:1.4;">${(member.b || member.personality || '无详细信息').substring(0, 50)}${(member.b || member.personality || '').length > 50 ? '...' : ''}</div>
         </div>
-    `).join('') + userMember;
+    `}).join('') + userMember;
 }
 
 function toggleSceneEdit() {
@@ -2079,29 +2344,26 @@ async function randMem() {
             // 更新成员信息
             if (d.data.characters && d.data.characters.length > 0) {
                 // 只取前3个作为NPC
-                mems = d.data.characters.slice(0, 3).map(c => ({
-                    a: c.avatar || '👤',
-                    n: c.name,
-                    r: c.role,
-                    b: c.background || c.personality || '未知'
-                }));
+                mems = d.data.characters.slice(0, 3).map(mapAICharacter);
                 
                 // 如果AI提供了用户身份信息，则更新全局用户身份
                 if (d.data.user_identity) {
-                    window.userInfo = {
+                    window.userInfo = ensureMemberVisuals({
                         a: d.data.user_identity.avatar || '👤',
+                        avatar: d.data.user_identity.avatar || '👤',
                         n: d.data.user_identity.name || '你',
                         r: d.data.user_identity.role || '参与者',
-                        b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
-                    };
+                        b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。',
+                        visualTraits: d.data.user_identity.visualTraits || d.data.user_identity.visual_traits || null
+                    });
                 } else {
                     // 默认用户信息
-                    window.userInfo = {
+                    window.userInfo = ensureMemberVisuals({
                         a: '👨‍💼',
                         n: '你',
                         r: '参与者',
                         b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
-                    };
+                    });
                 }
                 
                 renderMems();
@@ -2180,30 +2442,27 @@ async function regenerateScene() {
             // 更新成员信息
             if (d.data.characters && d.data.characters.length > 0) {
                 // 只取前3个作为NPC
-                mems = d.data.characters.slice(0, 3).map(c => ({
-                    a: c.avatar || '👤',
-                    n: c.name,
-                    r: c.role,
-                    b: c.background || c.personality || '未知'
-                }));
+                mems = d.data.characters.slice(0, 3).map(mapAICharacter);
                 
                 // 如果AI提供了用户身份信息，则更新全局用户身份
                 if (d.data.user_identity) {
-                    window.userInfo = {
-                        a: d.data.user_identity.avatar || '👤',
-                        n: d.data.user_identity.name || '你',
-                        r: d.data.user_identity.role || '参与者',
-                        b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
-                    };
-                } else {
-                    // 默认用户信息
-                    window.userInfo = {
-                        a: '👨‍💼',
-                        n: '你',
-                        r: '参与者',
-                        b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
-                    };
-                }
+                        window.userInfo = ensureMemberVisuals({
+                            a: d.data.user_identity.avatar || '👤',
+                            avatar: d.data.user_identity.avatar || '👤',
+                            n: d.data.user_identity.name || '你',
+                            r: d.data.user_identity.role || '参与者',
+                            b: d.data.user_identity.background || d.data.user_identity.personality || '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。',
+                            visualTraits: d.data.user_identity.visualTraits || d.data.user_identity.visual_traits || null
+                        });
+                    } else {
+                        // 默认用户信息
+                        window.userInfo = ensureMemberVisuals({
+                            a: '👨‍💼',
+                            n: '你',
+                            r: '参与者',
+                            b: '作为饭局的参与者，你需要在山东酒桌文化的氛围中得体应对各种情况，展示你的情商和社交能力。'
+                        });
+                    }
                 
                 renderMems();
                 
@@ -2227,11 +2486,11 @@ async function regenerateScene() {
     } finally {
         const b = document.getElementById('sceneGenBtn');
         b.disabled = false;
-        b.textContent = '�� 重新生成场景设定';
+        b.textContent = '🔄 重新生成场景设定';
     }
 }
 async function start(){
-chars=mems;
+chars=mems.map(m=>ensureMemberVisuals({...m}));
 show('p3');
 $('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
 renderConversationState('idle');
@@ -2287,8 +2546,8 @@ function toggleInterviewQuestionBox(){
     }
 }
 async function send(){
-const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';renderConversationState('user_speaking');addUser(t);
-const multimodal={emotion:emotionData,voice_level:isM?($('volLabel').textContent.replace('麦克风音量: ','').replace('%','')||0):0};
+const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';stopNpcVoice();renderConversationState('user_speaking');addUser(t);
+const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
@@ -2312,9 +2571,19 @@ const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2))
         updateMetrics(d.data.scores);
         if(d.data.game_over)setTimeout(end,2000)
     }
+    if(d.data.multimodal_analysis&&d.data.multimodal_analysis.emotion_state){
+        const em=d.data.multimodal_analysis.emotion_state.primary_emotion||'neutral';
+        lastVoiceEmotion=em;
+        setVoiceEmotion(em);
+    }
 }}catch(e){console.log('[Chat] 错误:', e)}
+lastVoiceFeatures=null;
+lastVoiceText='';
+
 }
 function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
+
+function addBot(t,sp,emo){return addBotStreaming(t,sp,emo)}
 
 function addBotStreaming(t,sp,emo){
     hist.push({role:'assistant',content:t});
@@ -2333,6 +2602,7 @@ function addBotStreaming(t,sp,emo){
         renderConversationState('idle');
     }
     
+    speakNPC(t, detectEmotionLabel(t));
     const mco=document.querySelector(`#${msgId} .mco`);
     let idx=0;
     return new Promise((resolve)=>{
@@ -2383,6 +2653,7 @@ async function displayUtterances(){
 async function interrupt(){
     if(!isNPCSpeaking)return;
     
+    stopNpcVoice();
     pendingUtterances=[];
     isNPCSpeaking=false;
     $('interruptBtn').style.display='none';
@@ -2424,8 +2695,181 @@ async function continueNPC(){
 }
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
+
+function buildReportHtml(data){
+    const npcList=data.npc_os_list||[];
+    const scores=data.scores||{};
+    const medalNames={
+        '🥇':'社交达人',
+        '🥈':'社交能手',
+        '🥉':'社交新手',
+        '📘':'饭桌木头人'
+    };
+    const medalName=medalNames[data.medal]||'社交新手';
+    return `
+<div style="display:flex;gap:40px;max-height:80vh;overflow:hidden;width:90%;margin:0 auto;">
+    <div style="flex:0 0 380px;display:flex;flex-direction:column;align-items:center;padding:20px;border-right:1px dashed #eee;">
+        <h1 style="margin:0;font-size:26px;color:#1a1a1a;">局后复盘</h1>
+        <p style="color:#666;font-size:13px;margin-top:4px;">在 "${data.scene_name||'未命名场景'}" 中的表现</p>
+        <div style="background:#e74c3c;color:white;padding:10px 20px;border-radius:12px;font-weight:800;font-size:18px;transform:rotate(-3deg);box-shadow:4px 8px 15px rgba(231,76,60,0.3);margin:20px 0;">
+            ${medalName}
+        </div>
+        <canvas id="radarChart" width="300" height="300" style="margin:10px 0;"></canvas>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;width:100%;margin-top:20px;">
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">圆滑度</span>
+                <b style="font-size:15px;color:#4a5dca;">${scores.oily||0}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">亲和力</span>
+                <b style="font-size:15px;color:#4a5dca;">${scores.friendliness||0}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">逻辑性</span>
+                <b style="font-size:15px;color:#4a5dca;">${scores.logic||0}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">幽默感</span>
+                <b style="font-size:15px;color:#4a5dca;">${scores.humor||0}</b>
+            </div>
+            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
+                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">懂规矩</span>
+                <b style="font-size:15px;color:#4a5dca;">${scores.respect||0}</b>
+            </div>
+        </div>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding-right:10px;">
+        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
+            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
+                <span style="margin-right:8px;">💬</span> 综合点评
+            </h3>
+            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${data.summary||'暂无综合点评'}</p>
+        </div>
+        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
+            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
+                <span style="margin-right:8px;">🎭</span> NPC 内心 OS
+            </h3>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+                ${npcList.map(npc=>`
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <div style="font-size:24px;">${renderInlineAvatar(npc.avatar,npc.name)}</div>
+                    <div>
+                        <b style="font-size:13px;color:#333;">${npc.name||'NPC'}</b>
+                        <p style="margin:3px 0 0 0;font-size:12px;color:#666;">${npc.content||npc.os||npc.thought||'暂无内心独白'}</p>
+                    </div>
+                </div>
+                `).join('')||'<div style="font-size:12px;color:#94a3b8;">暂无 NPC 侧反馈</div>'}
+            </div>
+        </div>
+        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
+                <span style="margin-right:8px;">🚀</span> 下一轮提升点
+            </h3>
+            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${data.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
+        </div>
+    </div>
+</div>`;
+}
+
+function getHistoryKey(){
+    const key=authToken||currentUser?.uid||currentUser?.email||'guest';
+    return `talkarena_history_${key}`;
+}
+function loadReports(){
+    try{
+        const raw=localStorage.getItem(getHistoryKey());
+        return raw?JSON.parse(raw):[];
+    }catch(e){
+        return [];
+    }
+}
+function saveReportToHistory(data){
+    if(!data)return;
+    const reports=loadReports();
+    const record={
+        id:Date.now().toString(36),
+        timestamp:Date.now(),
+        scene_name:data.scene_name||'未命名场景',
+        summary:data.summary||'综合点评',
+        data:data
+    };
+    reports.unshift(record);
+    localStorage.setItem(getHistoryKey(),JSON.stringify(reports.slice(0,200)));
+}
+function renderProfile(sceneKey){
+    const container=$('profileContent');
+    if(!container)return;
+    if(!currentUser){
+        container.innerHTML=`<div class="report-empty">请先登录后查看个人中心。<div style="margin-top:10px;"><button class="view-btn" onclick="openAuthModal()">去登录</button></div></div>`;
+        return;
+    }
+    const reports=loadReports();
+    if(reports.length===0){
+        container.innerHTML=`<div class="report-empty">暂无历史对话报告，完成一次练习后会自动保存到这里。</div>`;
+        return;
+    }
+    const groups={};
+    reports.forEach(r=>{
+        const key=r.scene_name||'未命名场景';
+        if(!groups[key])groups[key]=[];
+        groups[key].push(r);
+    });
+    const scenes=Object.keys(groups);
+    const active=sceneKey||profileSceneActive||scenes[0];
+    profileSceneActive=active;
+    const total=reports.length;
+    const distHtml=scenes.map(s=>`<div class="dist-row"><span>${s}</span><span>${groups[s].length}</span></div>`).join('');
+    const tabsHtml=scenes.map(s=>`<button class="profile-tab ${s===active?'active':''}" data-scene="${s}" onclick="renderProfile(this.dataset.scene)">${s}</button>`).join('');
+    const cardsHtml=(groups[active]||[]).map(r=>{
+        const date=new Date(r.timestamp);
+        const dateLabel=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+        return `
+        <div class="report-card">
+            <h5>${r.scene_name}</h5>
+            <p>${r.summary}</p>
+            <div style="font-size:12px;color:#94a3b8;">${dateLabel}</div>
+            <button class="view-btn" onclick="openHistoryReport('${r.id}')">查看详细报告</button>
+        </div>
+        `;
+    }).join('');
+    container.innerHTML=`
+        <div class="profile-stats">
+            <div class="profile-stat">
+                <h4>总练习次数</h4>
+                <div class="stat-val">${total}</div>
+            </div>
+            <div class="profile-stat">
+                <h4>各场景练习次数</h4>
+                ${distHtml}
+            </div>
+            <div class="profile-stat">
+                <h4>当前场景</h4>
+                <div class="stat-val">${active}</div>
+            </div>
+        </div>
+        <div class="profile-tabs">${tabsHtml}</div>
+        <div class="report-grid">${cardsHtml}</div>
+    `;
+}
+function openProfile(){
+    lastPageBeforeProfile=document.querySelector('.page.active')?.id||'p1';
+    show('p5');
+    renderProfile();
+}
+function goBackFromProfile(){
+    show(lastPageBeforeProfile||'p1');
+}
+function openHistoryReport(id){
+    const reports=loadReports();
+    const record=reports.find(r=>r.id===id);
+    if(!record)return;
+    $('rc').innerHTML=buildReportHtml(record.data);
+    drawRadarChart(record.data.scores);
+    show('p4');
+}
 async function end(){
     if(!sid)return;
+    stopNpcVoice();
     try{
         const r=await fetch('/api/session/end',{
             method:'POST',
@@ -2433,104 +2877,12 @@ async function end(){
             body:JSON.stringify({session_id:sid})
         });
         const d=await r.json();
-        if(d.success){
-            const data=d.data;
-            // 生成称号中文名称
-            const medalNames={
-                '🥇':'社交达人',
-                '🥈':'社交能手',
-                '🥉':'社交新手',
-                '📘':'饭桌木头人'
-            };
-            const medalName=medalNames[data.medal]||'社交新手';
-            
-            // 构建 HTML
-            $('rc').innerHTML=`
-<div style="display:flex;gap:40px;max-height:80vh;overflow:hidden;width:90%;margin:0 auto;">
-    <!-- 左侧面板 -->
-    <div style="flex:0 0 380px;display:flex;flex-direction:column;align-items:center;padding:20px;border-right:1px dashed #eee;">
-        <h1 style="margin:0;font-size:26px;color:#1a1a1a;">局后复盘</h1>
-        <p style="color:#666;font-size:13px;margin-top:4px;">在"${data.scene_name}"中的表现</p>
-        
-        <!-- 称号 -->
-        <div style="background:#e74c3c;color:white;padding:10px 20px;border-radius:12px;font-weight:800;font-size:18px;transform:rotate(-3deg);box-shadow:4px 8px 15px rgba(231,76,60,0.3);margin:20px 0;cursor:pointer;transition:all 0.3s;">
-            ${medalName}
-        </div>
-        
-        <!-- 雷达图 -->
-        <canvas id="radarChart" width="300" height="300" style="margin:10px 0;"></canvas>
-        
-        <!-- 五维度分数条 -->
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;width:100%;margin-top:20px;">
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">圆滑度</span>
-                <b style="font-size:15px;color:#4a5dca;">${data.scores.oily}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">亲和力</span>
-                <b style="font-size:15px;color:#4a5dca;">${data.scores.friendliness}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">逻辑性</span>
-                <b style="font-size:15px;color:#4a5dca;">${data.scores.logic}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">幽默感</span>
-                <b style="font-size:15px;color:#4a5dca;">${data.scores.humor}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">懂规矩</span>
-                <b style="font-size:15px;color:#4a5dca;">${data.scores.respect}</b>
-            </div>
-        </div>
-    </div>
-    
-    <!-- 右侧面板 -->
-    <div style="flex:1;overflow-y:auto;padding-right:10px;">
-        <!-- 综合点评 -->
-        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
-            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
-                <span style="margin-right:8px;">💬</span> 综合点评
-            </h3>
-            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${data.summary}</p>
-        </div>
-        
-        <!-- NPC 内心 OS -->
-        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
-            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
-                <span style="margin-right:8px;">🎭</span> NPC 内心 OS
-            </h3>
-            <div style="display:flex;flex-direction:column;gap:10px;">
-                ${data.npc_os_list.map(npc=>`
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <div style="font-size:24px;">${npc.avatar||'👤'}</div>
-                    <div>
-                        <b style="font-size:13px;color:#333;">${npc.name}</b>
-                        <p style="margin:2px 0 0 0;font-size:12px;color:#666;">${npc.os||npc.thought||'表现一般'}</p>
-                    </div>
-                </div>
-                `).join('')}
-            </div>
-        </div>
-        
-        <!-- 改进建议 -->
-        <div style="background:#fffbe6;border:1px solid #ffe58f;padding:15px;border-radius:14px;transition:all 0.3s;">
-            <b style="display:block;font-size:14px;margin-bottom:5px;color:#856404;border-bottom:1px solid rgba(133,100,4,0.1);padding-bottom:3px;">
-                💡 改进建议
-            </b>
-            <p style="margin:0;font-size:13px;line-height:1.5;color:#666;">${data.suggestion}</p>
-        </div>
-    </div>
-</div>
-<div style="display:flex;justify-content:center;margin-top:20px;">
-    <button class="btn2" onclick="show('p1')">返回菜单</button>
-</div>
-`;
-            // 绘制雷达图
-            drawRadarChart(data.scores);
-            
-            show('p4');
-        }
+        if(!d.success)return;
+        const data=d.data;
+        saveReportToHistory(data);
+        $('rc').innerHTML=buildReportHtml(data);
+        drawRadarChart(data.scores);
+        show('p4');
     }catch(e){
         console.error('结束会话失败:',e);
     }
@@ -2636,105 +2988,148 @@ function toggleCameraPanel(){const panel=$('monitorPanel');if(isFirstCameraClick
 function toggleMicPanel(){if(isFirstMicClick){alert('欢迎使用麦克风功能！\n\n请选择您的麦克风设备，然后点击"开启麦克风"按钮。');isFirstMicClick=false;}toggleM2();}
 async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;vid.style.display='none';ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;vid.style.display='block';ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
 function updateEmotionDisplay(){$('val-confidence').textContent=emotionData.confidence;$('val-calm').textContent=emotionData.calm;$('val-nervous').textContent=emotionData.nervous;$('val-focus').textContent=emotionData.focus;$('bar-confidence').style.width=emotionData.confidence+'%';$('bar-calm').style.width=emotionData.calm+'%';$('bar-nervous').style.width=emotionData.nervous+'%';$('bar-focus').style.width=emotionData.focus+'%'}
-let micAnimId=null;
 let micButton=null;
-let recognition=null;
-let isRecognizing=false;
-function toggleM2(){
-    console.log('toggleM2 被调用, isM:', isM);
-    if(!micButton){
-        micButton=document.getElementById('micInputBtn');
-        console.log('获取按钮:', micButton);
+let micStream=null;
+let audioContext=null;
+let recorderNode=null;
+let recordingBuffer=[];
+let lastVoiceFeatures=null;
+let lastVoiceText='';
+let lastVoiceEmotion='neutral';
+let recordingStart=0;
+let recordSampleRate=44100;
+
+function setMicStatus(text){const el=$('micStatus');if(el)el.textContent=text}
+function setVoiceEmotion(text){const el=$('voiceEmotion');if(el)el.textContent=`语音情感: ${text||'--'}`}
+
+function downsampleBuffer(buffer, inRate, outRate){
+    if(outRate===inRate)return buffer;
+    const sampleRateRatio=inRate/outRate;
+    const newLength=Math.round(buffer.length/sampleRateRatio);
+    const result=new Float32Array(newLength);
+    let offsetResult=0;
+    let offsetBuffer=0;
+    while(offsetResult<result.length){
+        const nextOffsetBuffer=Math.round((offsetResult+1)*sampleRateRatio);
+        let accum=0, count=0;
+        for(let i=offsetBuffer;i<nextOffsetBuffer&&i<buffer.length;i++){accum+=buffer[i];count++}
+        result[offsetResult]=accum/count;
+        offsetResult++;
+        offsetBuffer=nextOffsetBuffer;
     }
-    const b=$('mmb'),micId=$('micSelect') ? $('micSelect').value : '';
-    
+    return result;
+}
+function encodeWav(samples, sampleRate){
+    const buffer=new ArrayBuffer(44+samples.length*2);
+    const view=new DataView(buffer);
+    const writeString=(offset,str)=>{for(let i=0;i<str.length;i++)view.setUint8(offset+i,str.charCodeAt(i))};
+    writeString(0,'RIFF');
+    view.setUint32(4,36+samples.length*2,true);
+    writeString(8,'WAVE');
+    writeString(12,'fmt ');
+    view.setUint32(16,16,true);
+    view.setUint16(20,1,true);
+    view.setUint16(22,1,true);
+    view.setUint32(24,sampleRate,true);
+    view.setUint32(28,sampleRate*2,true);
+    view.setUint16(32,2,true);
+    view.setUint16(34,16,true);
+    writeString(36,'data');
+    view.setUint32(40,samples.length*2,true);
+    let offset=44;
+    for(let i=0;i<samples.length;i++){
+        const s=Math.max(-1,Math.min(1,samples[i]));
+        view.setInt16(offset, s<0?s*0x8000:s*0x7FFF, true);
+        offset+=2;
+    }
+    return new Blob([view],{type:'audio/wav'});
+}
+function startLocalRecording(stream){
+    recordingBuffer=[];
+    recordingStart=Date.now();
+    audioContext=new (window.AudioContext||window.webkitAudioContext)();
+    recordSampleRate=audioContext.sampleRate;
+    const source=audioContext.createMediaStreamSource(stream);
+    recorderNode=audioContext.createScriptProcessor(4096,1,1);
+    recorderNode.onaudioprocess=(e)=>{
+        const input=e.inputBuffer.getChannelData(0);
+        recordingBuffer.push(new Float32Array(input));
+    };
+    source.connect(recorderNode);
+    recorderNode.connect(audioContext.destination);
+}
+async function stopLocalRecording(){
+    if(!audioContext)return null;
+    recorderNode.disconnect();
+    recorderNode=null;
+    await audioContext.close();
+    audioContext=null;
+    const length=recordingBuffer.reduce((acc,cur)=>acc+cur.length,0);
+    const merged=new Float32Array(length);
+    let offset=0;
+    recordingBuffer.forEach(buf=>{merged.set(buf,offset);offset+=buf.length});
+    const downsampled=downsampleBuffer(merged,recordSampleRate,16000);
+    return encodeWav(downsampled,16000);
+}
+
+async function toggleM2(){
+    if(!micButton)micButton=document.getElementById('micInputBtn');
+    const b=$('mmb');
+    const micId=$('micSelect')?$('micSelect').value:'';
     if(isM){
-        stopRecognition();
-        if(mic)mic.getTracks().forEach(t=>t.stop());
-        if(micAnimId)cancelAnimationFrame(micAnimId);
         isM=0;
-        if(b)b.textContent='🎤 开启麦克风';
+        if(micStream)micStream.getTracks().forEach(t=>t.stop());
+        if(b)b.textContent='🎤 开始录音';
         if(b)b.classList.remove('on');
         if(micButton)micButton.classList.remove('active');
-        lastVoiceLevel=0
-    }else{
-        try{
-            const constraints={audio:true};
-            if(micId)constraints.deviceId={exact:micId};
-            navigator.mediaDevices.getUserMedia(constraints).then(s=>{
-                mic=s;
-                isM=1;
-                if(b)b.textContent='✅ 已开启';
-                if(b)b.classList.add('on');
-                if(micButton)micButton.classList.add('active');
-                console.log('麦克风已开启, 添加 active 类');
-                startRecognition();
-            }).catch(()=>alert('无法开启麦克风'))
-        }catch(e){
-            alert('无法开启麦克风: '+e.message)
-        }
-    }
-}
-
-function startRecognition(){
-    console.log('开始语音识别...');
-    if(!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)){
-        alert('您的浏览器不支持语音识别功能');
+        setMicStatus('正在识别...');
+        const wavBlob=await stopLocalRecording();
+        if(wavBlob)await submitLocalSTT(wavBlob);
         return;
     }
-    
-    const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
-    recognition=new SpeechRecognition();
-    recognition.continuous=true;
-    recognition.interimResults=true;
-    recognition.lang='zh-CN';
-    
-    recognition.onstart=function(){
-        console.log('语音识别已启动');
-        isRecognizing=true;
-    };
-    
-    recognition.onresult=function(event){
-        let transcript='';
-        for(let i=event.resultIndex;i<event.results.length;i++){
-            transcript+=event.results[i][0].transcript;
-        }
-        if(transcript){
-            console.log('识别结果:', transcript);
-            const input=$('ci2');
-            if(input)input.value=transcript;
-        }
-    };
-    
-    recognition.onerror=function(event){
-        console.error('语音识别错误:', event.error);
-        isRecognizing=false;
-    };
-    
-    recognition.onend=function(){
-        console.log('语音识别结束');
-        isRecognizing=false;
-        if(isM){
-            setTimeout(()=>{
-                if(isM && recognition)recognition.start();
-            },100);
-        }
-    };
-    
-    recognition.start();
+    try{
+        const constraints={audio:true};
+        if(micId)constraints.deviceId={exact:micId};
+        micStream=await navigator.mediaDevices.getUserMedia(constraints);
+        isM=1;
+        if(b)b.textContent='⏹️ 停止录音';
+        if(b)b.classList.add('on');
+        if(micButton)micButton.classList.add('active');
+        setMicStatus('录音中...');
+        startLocalRecording(micStream);
+    }catch(e){
+        alert('无法开启麦克风: '+e.message);
+    }
 }
 
-function stopRecognition(){
-    if(recognition){
-        recognition.stop();
-        recognition=null;
+async function submitLocalSTT(wavBlob){
+    try{
+        const fd=new FormData();
+        fd.append('file', wavBlob, 'speech.wav');
+        const r=await fetch('/api/stt',{method:'POST',body:fd});
+        const d=await r.json();
+        if(d.success){
+            const text=d.data.text||'';
+            const input=$('ci2');
+            if(input)input.value=text;
+            lastVoiceText=text;
+            lastVoiceFeatures=d.data.voice_features||null;
+            const emo=d.data.emotion_state?.primary_emotion||'neutral';
+            lastVoiceEmotion=emo;
+            setVoiceEmotion(emo);
+            setMicStatus('识别完成');
+        }else{
+            setMicStatus('识别失败');
+        }
+    }catch(e){
+        setMicStatus('识别失败');
     }
-    isRecognizing=false;
 }
 function updateMetrics(scores){console.log('[Metrics] 收到分数:', scores);if(scores){const total=Math.round((scores.emotional_intelligence+scores.response_quality+scores.pressure_handling+scores.cultural_fit)/4);$('val-score').textContent=total;$('bar-score').style.width=total+'%'}else{console.log('[Metrics] 分数为空')}}
 function toggleM(){toggleM2()}
 async function loadDevices(){try{const devs=await navigator.mediaDevices.enumerateDevices();const cams=devs.filter(d=>d.kind==='videoinput');const mics=devs.filter(d=>d.kind==='audioinput');$('camSelect').innerHTML='<option value="">📷 选择摄像头</option>'+cams.map((d,i)=>`<option value="${d.deviceId}">${d.label||'摄像头'+(i+1)}</option>`).join('');$('micSelect').innerHTML='<option value="">🎤 选择麦克风</option>'+mics.map((d,i)=>`<option value="${d.deviceId}">${d.label||'麦克风'+(i+1)}</option>`).join('')}catch(e){}}
 window.onload=()=>{
+    updateNpcVoiceButton();
     // 初始化场景选择，确保压力敏感区正确显示
     renderScenes();
     genMems();
@@ -2802,6 +3197,7 @@ window.onload=()=>{
         <span class="user-avatar">👤</span>
         <span class="user-name" id="userName">用户</span>
     </div>
+    <button class="profile-btn" onclick="openProfile()">个人中心</button>
     <button class="logout-btn" onclick="logout()">退出</button>
 </div>
 <style>
@@ -2830,6 +3226,8 @@ window.onload=()=>{
 .user-info{display:flex;align-items:center;gap:10px}
 .user-avatar{font-size:24px}
 .user-name{font-weight:600;color:#333}
+.profile-btn{background:#fff;border:2px solid #c8dcff;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;color:#2563eb;transition:all .3s}
+.profile-btn:hover{background:#eff6ff;border-color:#93c5fd;color:#1d4ed8}
 .logout-btn{background:#f8f9fa;border:2px solid #e5e7eb;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;color:#666;transition:all .3s}
 .logout-btn:hover{background:#e5e7eb;color:#333}
 .login-btn{position:absolute;top:20px;right:20px;padding:10px 20px;background:#C8102E;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;z-index:9999}

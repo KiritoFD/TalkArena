@@ -373,6 +373,7 @@ class MultimodalAnalyzer:
 
         emotion_data = multimodal_data.get("emotion", {})
         voice_level = multimodal_data.get("voice_level", 0)
+        voice_features_dict = multimodal_data.get("voice_features")
 
         face_data = None
         if emotion_data:
@@ -392,7 +393,9 @@ class MultimodalAnalyzer:
             }
 
         voice_data = None
-        if voice_level > 0:
+        if voice_features_dict:
+            voice_data = voice_features_dict
+        elif voice_level > 0:
             voice_data = {
                 "loudness": voice_level / 100.0,
                 "speechRate": 3.0,

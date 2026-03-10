@@ -20,7 +20,9 @@ class ProcessResult:
 
 
 class TalkArenaEngine:
-    def __init__(self, llm=None, enable_tts: bool = False, use_unified_agent: bool = True):
+    def __init__(
+        self, llm=None, enable_tts: bool = False, use_unified_agent: bool = True
+    ):
         from core.agents.multi_agent import MultiAgentOrchestrator
         from core.agents.unified_agent import UnifiedAgent
         from core.rag.knowledge_base import RAGEngine
@@ -32,11 +34,21 @@ class TalkArenaEngine:
         self.enable_tts = enable_tts
         self.use_unified_agent = use_unified_agent
 
+        if enable_tts:
+            try:
+                from model_loader import TTSLoader
+
+                self.tts = TTSLoader()
+                self.tts.load()
+                print("[Engine] TTS 已加载")
+            except Exception as e:
+                print(f"[Engine] TTS 加载失败: {e}")
+
         if use_unified_agent:
             self.unified_agent = UnifiedAgent(llm)
         else:
             self.multi_agent = MultiAgentOrchestrator(llm)
-        
+
         self.rag_engine = RAGEngine()
         self.decision_engine = DecisionEngine()
         self.validators: Dict[str, OutputValidator] = {}
@@ -95,7 +107,9 @@ class TalkArenaEngine:
         from core.validators.output_validator import OutputValidator
 
         sid = str(uuid.uuid4())[:8]
-        scenario = dict(self.scenarios.get(scenario_id, self.scenarios["shandong_dinner"]))
+        scenario = dict(
+            self.scenarios.get(scenario_id, self.scenarios["shandong_dinner"])
+        )
 
         if characters:
             scenario["characters"] = characters
@@ -118,7 +132,11 @@ class TalkArenaEngine:
         return sid
 
     def process_turn(
-        self, session_id: str, user_input: str, multimodal: Optional[Dict] = None, is_interrupt: bool = False
+        self,
+        session_id: str,
+        user_input: str,
+        multimodal: Optional[Dict] = None,
+        is_interrupt: bool = False,
     ) -> Generator[ProcessResult, None, None]:
         if session_id not in self.sessions:
             yield ProcessResult("error", error="session_not_found")
@@ -129,11 +147,11 @@ class TalkArenaEngine:
 
         if self.use_unified_agent:
             yield ProcessResult("stage_generation", {"message": "generating"})
-            
+
             conversation_history = []
             for h in session.get("unified_history", []):
                 conversation_history.append(h)
-            
+
             result = self.unified_agent.process(
                 scenario_id=session.get("scenario_id", "shandong_dinner"),
                 user_input=user_input,
@@ -141,31 +159,37 @@ class TalkArenaEngine:
                 conversation_history=conversation_history,
                 is_interrupt=is_interrupt,
             )
-            
+
             if user_input:
-                session["unified_history"].append({
-                    "speaker": "用户",
-                    "text": user_input,
-                    "timestamp_ms": int(__import__("time").time() * 1000),
-                    "is_user": True,
-                })
-            
+                session["unified_history"].append(
+                    {
+                        "speaker": "用户",
+                        "text": user_input,
+                        "timestamp_ms": int(__import__("time").time() * 1000),
+                        "is_user": True,
+                    }
+                )
+
             utterances_data = []
             for u in result.utterances:
-                utterances_data.append({
-                    "npc_id": u.npc_id,
-                    "text": u.text,
-                    "delay_ms": u.delay_ms,
-                })
-                session["unified_history"].append({
-                    "speaker": u.npc_id,
-                    "text": u.text,
-                    "timestamp_ms": int(__import__("time").time() * 1000),
-                    "is_user": False,
-                })
-            
+                utterances_data.append(
+                    {
+                        "npc_id": u.npc_id,
+                        "text": u.text,
+                        "delay_ms": u.delay_ms,
+                    }
+                )
+                session["unified_history"].append(
+                    {
+                        "speaker": u.npc_id,
+                        "text": u.text,
+                        "timestamp_ms": int(__import__("time").time() * 1000),
+                        "is_user": False,
+                    }
+                )
+
             session["turn_count"] += 1
-            
+
             yield ProcessResult(
                 "complete",
                 {
@@ -179,7 +203,10 @@ class TalkArenaEngine:
             yield ProcessResult("stage_analysis", {"message": "analyzing"})
             analysis = self.decision_engine.analyze_input(
                 user_input,
-                {"dominance": session["dominance"], "turn_count": session["turn_count"]},
+                {
+                    "dominance": session["dominance"],
+                    "turn_count": session["turn_count"],
+                },
             )
 
             yield ProcessResult("stage_rag", {"message": "retrieving"})
@@ -200,12 +227,14 @@ class TalkArenaEngine:
             yield ProcessResult("stage_generation", {"message": "generating"})
             conversation_history = []
             for h in session["history"][-5:]:
-                conversation_history.append({
-                    "user": h.get("user", ""),
-                    "ai": h.get("ai", ""),
-                    "speaker": h.get("speaker", ""),
-                })
-            
+                conversation_history.append(
+                    {
+                        "user": h.get("user", ""),
+                        "ai": h.get("ai", ""),
+                        "speaker": h.get("speaker", ""),
+                    }
+                )
+
             context = {
                 "user_input": user_input,
                 "scenario_id": session.get("scenario_id", "shandong_dinner"),
@@ -258,7 +287,7 @@ class TalkArenaEngine:
     def get_rescue_suggestion(self, session_id: str) -> str:
         if session_id not in self.sessions:
             return "会话不存在"
-        
+
         fallback_suggestions = [
             "要不咱先喝口茶，慢慢说？",
             "这个事确实有意思，你怎么看？",
@@ -266,8 +295,9 @@ class TalkArenaEngine:
             "要不咱先吃点菜，边吃边聊？",
             "你说的有道理，那接下来呢？",
         ]
-        
+
         import random
+
         return random.choice(fallback_suggestions)
 
     def end_session(self, session_id: str) -> Dict[str, Any]:
@@ -275,15 +305,15 @@ class TalkArenaEngine:
             return {"error": "session_not_found"}
 
         session = self.sessions[session_id]
-        
+
         # 生成完整复盘报告
         report = self._generate_full_report(session)
-        
+
         # 清理 session
         del self.sessions[session_id]
-        
+
         return report
-    
+
     def _generate_full_report(self, session: Dict[str, Any]) -> Dict[str, Any]:
         """生成完整的复盘报告，包含五维度评分、综合点评、NPC 内心 OS、改进建议"""
         from core.prompts import (
@@ -292,14 +322,19 @@ class TalkArenaEngine:
             get_report_npc_inner_voice_prompt,
         )
         import json
-        
+
         scene_name = session["scene_name"]
         npc_list = session["scenario"].get("characters", [])
-        history_log = "\n".join([f"{c.get('name', 'NPC')}: {msg}" for c, msg in session.get("chat_history", [])])
+        history_log = "\n".join(
+            [
+                f"{c.get('name', 'NPC')}: {msg}"
+                for c, msg in session.get("chat_history", [])
+            ]
+        )
         turn_count = session.get("turn_count", 0)
         user_dominance = session["dominance"].get("user", 50)
         ai_dominance = session["dominance"].get("ai", 50)
-        
+
         # 计算结果
         if user_dominance > 60:
             result = "🏆 用户胜出"
@@ -310,44 +345,56 @@ class TalkArenaEngine:
         else:
             result = "🤝 势均力敌"
             medal_score = 70
-        
+
         # 1. 生成五维度评分
         try:
             scores_prompt = get_report_scores_prompt(
                 scene_name=scene_name,
                 npc_list=json.dumps(npc_list, ensure_ascii=False),
-                history_log=history_log
+                history_log=history_log,
             )
             scores_result = self.llm.generate(scores_prompt, max_new_tokens=200)
-            
+
             # 解析 JSON
             try:
                 scores_data = json.loads(scores_result.strip())
                 metrics = scores_data.get("metrics", {})
             except:
                 # 解析失败时使用默认值
-                metrics = {"oily": 50, "friendliness": 50, "logic": 50, "humor": 50, "respect": 50}
+                metrics = {
+                    "oily": 50,
+                    "friendliness": 50,
+                    "logic": 50,
+                    "humor": 50,
+                    "respect": 50,
+                }
         except Exception as e:
             logger.error(f"生成评分失败：{e}")
-            metrics = {"oily": 50, "friendliness": 50, "logic": 50, "humor": 50, "respect": 50}
-        
+            metrics = {
+                "oily": 50,
+                "friendliness": 50,
+                "logic": 50,
+                "humor": 50,
+                "respect": 50,
+            }
+
         # 2. 计算总分和勋章
         total_score = sum(metrics.values()) / len(metrics) if metrics else 50
         medal = self._determine_medal(total_score)
-        
+
         # 3. 生成综合点评
         try:
             summary_prompt = get_report_summary_prompt(
                 scene_name=scene_name,
                 npc_list=json.dumps(npc_list, ensure_ascii=False),
                 history_log=history_log,
-                medal=self._get_medal_name(medal)
+                medal=self._get_medal_name(medal),
             )
             summary = self.llm.generate(summary_prompt, max_new_tokens=300)
         except Exception as e:
             logger.error(f"生成点评失败：{e}")
             summary = f"{turn_count}轮对话中你的表现为：{result}。"
-        
+
         # 4. 生成 NPC 内心 OS 和改进建议
         npc_os_list = []
         suggestion = ""
@@ -356,10 +403,10 @@ class TalkArenaEngine:
                 scene_name=scene_name,
                 npc_list=json.dumps(npc_list, ensure_ascii=False),
                 history_log=history_log,
-                medal=self._get_medal_name(medal)
+                medal=self._get_medal_name(medal),
             )
             npc_result = self.llm.generate(npc_prompt, max_new_tokens=400)
-            
+
             # 解析 JSON
             try:
                 npc_data = json.loads(npc_result.strip())
@@ -368,22 +415,26 @@ class TalkArenaEngine:
             except:
                 # 解析失败时使用默认值
                 for char in npc_list:
-                    npc_os_list.append({
-                        "name": char.get("name", "NPC"),
-                        "avatar": char.get("avatar", "👤"),
-                        "os": "表现尚可，继续努力。"
-                    })
+                    npc_os_list.append(
+                        {
+                            "name": char.get("name", "NPC"),
+                            "avatar": char.get("avatar", "👤"),
+                            "os": "表现尚可，继续努力。",
+                        }
+                    )
                 suggestion = "建议多观察，少说话。"
         except Exception as e:
             logger.error(f"生成 NPC 内心 OS 失败：{e}")
             for char in npc_list:
-                npc_os_list.append({
-                    "name": char.get("name", "NPC"),
-                    "avatar": char.get("avatar", "👤"),
-                    "os": "表现一般。"
-                })
+                npc_os_list.append(
+                    {
+                        "name": char.get("name", "NPC"),
+                        "avatar": char.get("avatar", "👤"),
+                        "os": "表现一般。",
+                    }
+                )
             suggestion = "建议继续训练提升。"
-        
+
         return {
             "scene_name": scene_name,
             "turn_count": turn_count,
@@ -405,7 +456,7 @@ class TalkArenaEngine:
                 "ai": ai_dominance,
             },
         }
-    
+
     def _get_medal_name(self, medal: str) -> str:
         """根据勋章符号返回中文名称"""
         medal_names = {
@@ -455,5 +506,11 @@ class TalkArenaEngine:
                 thought = "有来有回，继续看后续发挥。"
             else:
                 thought = "压力上来后出现犹豫，还能再提升。"
-            thoughts.append({"name": char.get("name", "NPC"), "avatar": char.get("avatar", "npc"), "thought": thought})
+            thoughts.append(
+                {
+                    "name": char.get("name", "NPC"),
+                    "avatar": char.get("avatar", "npc"),
+                    "thought": thought,
+                }
+            )
         return thoughts
