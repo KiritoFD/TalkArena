@@ -6,6 +6,7 @@ TalkArena FastAPI 服务端
 import sys
 import os
 import importlib.util
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -32,6 +33,7 @@ engine = None
 mm_analyzer = None
 stt_service = None
 tts_service = None
+AUDIO_OUTPUT_DIR = Path(tempfile.gettempdir()) / "talkarena_audio"
 
 
 class _MockResult:
@@ -482,7 +484,8 @@ async def tts(req: TTSReq):
         if not audio_bytes:
             return {"success": False, "error": "TTS failed"}
         filename = f"tts_{int(__import__('time').time() * 1000)}.wav"
-        out_path = os.path.join("outputs", "audio", filename)
+        AUDIO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = AUDIO_OUTPUT_DIR / filename
         with open(out_path, "wb") as f:
             f.write(audio_bytes)
         return {"success": True, "data": {"url": f"/audio/{filename}"}}
@@ -984,8 +987,11 @@ async def list_scenarios():
     return {"success": True, "data": scenarios}
 
 
-os.makedirs("outputs/audio", exist_ok=True)
-app.mount("/audio", StaticFiles(directory="outputs/audio"), name="audio")
+try:
+    AUDIO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/audio", StaticFiles(directory=str(AUDIO_OUTPUT_DIR)), name="audio")
+except Exception as e:
+    print(f"[Audio] static mount skipped: {e}")
 if os.path.isdir("assets"):
     app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
