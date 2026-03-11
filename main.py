@@ -2907,20 +2907,21 @@ function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
 
 function buildReportHtml(data){
-    const npcList=data.npc_os_list||[];
-    const scores=data.scores||{};
+    const safeData=data||{};
+    const npcList=Array.isArray(safeData.npc_os_list)?safeData.npc_os_list:[];
+    const scores=(safeData.scores&&typeof safeData.scores==='object')?safeData.scores:{};
     const medalNames={
         '🥇':'社交达人',
         '🥈':'社交能手',
         '🥉':'社交新手',
         '📘':'饭桌木头人'
     };
-    const medalName=medalNames[data.medal]||'社交新手';
+    const medalName=medalNames[safeData.medal]||'社交新手';
     return `
 <div style="display:flex;gap:40px;max-height:80vh;overflow:hidden;width:90%;margin:0 auto;">
     <div style="flex:0 0 380px;display:flex;flex-direction:column;align-items:center;padding:20px;border-right:1px dashed #eee;">
         <h1 style="margin:0;font-size:26px;color:#1a1a1a;">局后复盘</h1>
-        <p style="color:#666;font-size:13px;margin-top:4px;">在 "${data.scene_name||'未命名场景'}" 中的表现</p>
+        <p style="color:#666;font-size:13px;margin-top:4px;">在 "${safeData.scene_name||'未命名场景'}" 中的表现</p>
         <div style="background:#e74c3c;color:white;padding:10px 20px;border-radius:12px;font-weight:800;font-size:18px;transform:rotate(-3deg);box-shadow:4px 8px 15px rgba(231,76,60,0.3);margin:20px 0;">
             ${medalName}
         </div>
@@ -2953,7 +2954,7 @@ function buildReportHtml(data){
             <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
                 <span style="margin-right:8px;">💬</span> 综合点评
             </h3>
-            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${data.summary||'暂无综合点评'}</p>
+            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${safeData.summary||'暂无综合点评'}</p>
         </div>
         <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
             <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
@@ -2975,7 +2976,7 @@ function buildReportHtml(data){
             <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
                 <span style="margin-right:8px;">🚀</span> 下一轮提升点
             </h3>
-            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${data.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
+            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${safeData.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
         </div>
     </div>
 </div>`;
@@ -3086,19 +3087,33 @@ async function end(){
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({session_id:sid})
         });
+        if(!r.ok){
+            throw new Error(`结束会话接口异常: HTTP ${r.status}`);
+        }
         const d=await r.json();
-        if(!d.success)return;
-        const data=d.data;
+        if(!d.success){
+            throw new Error(d.error||'结束会话失败');
+        }
+        const data=(d.data&&typeof d.data==='object')?d.data:{};
         saveReportToHistory(data);
         $('rc').innerHTML=buildReportHtml(data);
-        drawRadarChart(data.scores);
         show('p4');
+        drawRadarChart(data.scores||{});
     }catch(e){
         console.error('结束会话失败:',e);
+        const fallback={
+            scene_name:'本轮会话',
+            summary:'总结生成失败，请稍后重试。',
+            suggestion:'可返回继续对话，或重新开始新会话。',
+            scores:{}
+        };
+        $('rc').innerHTML=buildReportHtml(fallback);
+        show('p4');
     }
 }
 
 function drawRadarChart(scores){
+    const safeScores=(scores&&typeof scores==='object')?scores:{};
     const canvas=document.getElementById('radarChart');
     if(!canvas)return;
     const ctx=canvas.getContext('2d');
@@ -3109,11 +3124,11 @@ function drawRadarChart(scores){
     // 五个维度
     const labels=['Oily','Friendly','Logical','Humor','Respect'];
     const values=[
-        scores.oily||50,
-        scores.friendliness||50,
-        scores.logic||50,
-        scores.humor||50,
-        scores.respect||50
+        safeScores.oily||50,
+        safeScores.friendliness||50,
+        safeScores.logic||50,
+        safeScores.humor||50,
+        safeScores.respect||50
     ];
     
     // 清空画布
