@@ -12,6 +12,21 @@ import uuid
 logger = logging.getLogger("TalkArena")
 
 
+def _to_score(value: Any, default: float = 50) -> float:
+    """将 LLM 返回的分数值安全转换为 0~100 的数字。"""
+    try:
+        if value is None:
+            return float(default)
+        score = float(value)
+        if score < 0:
+            return 0.0
+        if score > 100:
+            return 100.0
+        return score
+    except (TypeError, ValueError):
+        return float(default)
+
+
 @dataclass
 class ProcessResult:
     stage: str
@@ -306,8 +321,32 @@ class TalkArenaEngine:
 
         session = self.sessions[session_id]
 
-        # 生成完整复盘报告
-        report = self._generate_full_report(session)
+        # 生成完整复盘报告（任何异常都返回兜底报告，避免前端白屏）
+        try:
+            report = self._generate_full_report(session)
+        except Exception as e:
+            logger.exception(f"end_session 生成复盘失败: {e}")
+            report = {
+                "scene_name": session.get("scene_name", "未命名场景"),
+                "turn_count": session.get("turn_count", 0),
+                "result": "复盘生成失败",
+                "medal": "📘",
+                "scores": {
+                    "oily": 50,
+                    "friendliness": 50,
+                    "logic": 50,
+                    "humor": 50,
+                    "respect": 50,
+                    "total": 50,
+                },
+                "summary": "本轮总结生成异常，建议稍后重试。",
+                "suggestion": "可先继续对话训练，或重新开始一次新会话。",
+                "npc_os_list": [],
+                "final_dominance": {
+                    "user": session.get("dominance", {}).get("user", 50),
+                    "ai": session.get("dominance", {}).get("ai", 50),
+                },
+            }
 
         # 清理 session
         del self.sessions[session_id]
@@ -323,8 +362,8 @@ class TalkArenaEngine:
         )
         import json
 
-        scene_name = session["scene_name"]
-        npc_list = session["scenario"].get("characters", [])
+        scene_name = session.get("scene_name", "未命名场景")
+        npc_list = session.get("scenario", {}).get("characters", [])
         history_log = "\n".join(
             [
                 f"{c.get('name', 'NPC')}: {msg}"
@@ -332,8 +371,9 @@ class TalkArenaEngine:
             ]
         )
         turn_count = session.get("turn_count", 0)
-        user_dominance = session["dominance"].get("user", 50)
-        ai_dominance = session["dominance"].get("ai", 50)
+        dominance = session.get("dominance", {})
+        user_dominance = _to_score(dominance.get("user", 50))
+        ai_dominance = _to_score(dominance.get("ai", 50))
 
         # 计算结果
         if user_dominance > 60:
@@ -358,7 +398,16 @@ class TalkArenaEngine:
             # 解析 JSON
             try:
                 scores_data = json.loads(scores_result.strip())
-                metrics = scores_data.get("metrics", {})
+                metrics_raw = scores_data.get("metrics", {})
+                if not isinstance(metrics_raw, dict):
+                    metrics_raw = {}
+                metrics = {
+                    "oily": _to_score(metrics_raw.get("oily", 50)),
+                    "friendliness": _to_score(metrics_raw.get("friendliness", 50)),
+                    "logic": _to_score(metrics_raw.get("logic", 50)),
+                    "humor": _to_score(metrics_raw.get("humor", 50)),
+                    "respect": _to_score(metrics_raw.get("respect", 50)),
+                }
             except:
                 # 解析失败时使用默认值
                 metrics = {
