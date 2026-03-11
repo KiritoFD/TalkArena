@@ -5,6 +5,7 @@ TalkArena FastAPI 服务端
 
 import sys
 import os
+import logging
 import importlib.util
 import tempfile
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import List, Optional, Dict
 
 app = FastAPI(title="TalkArena")
 MULTIPART_AVAILABLE = importlib.util.find_spec("multipart") is not None
+logger = logging.getLogger("TalkArenaAPI")
 
 # 引入认证路由
 try:
@@ -202,6 +204,12 @@ class MMReq(BaseModel):
     voice_features: Optional[Dict] = None
 
 
+class ClientLogReq(BaseModel):
+    level: str = "info"
+    message: str
+    payload: Optional[Dict] = None
+
+
 class ScenarioGenerateReq(BaseModel):
     scene_type: str = "shandong_dinner"
     scene_name: str = "家庭饭桌试炼"
@@ -330,7 +338,13 @@ async def send_msg(req: ChatReq):
             except Exception:
                 mm_result = None
         print(f"[API] 收到多模态数据: {multimodal}")
-        for result in eng.process_turn(req.session_id, req.message, multimodal, is_interrupt=False):
+        try:
+            turn_iter = eng.process_turn(
+                req.session_id, req.message, multimodal, is_interrupt=False
+            )
+        except TypeError:
+            turn_iter = eng.process_turn(req.session_id, req.message, multimodal)
+        for result in turn_iter:
             if result.stage == "complete":
                 payload = result.data or {}
                 if mm_result:
@@ -425,10 +439,29 @@ async def end_session(req: ChatReq):
         return {"success": False, "error": "会话不存在"}
 
     try:
+        print(f"[ClientAPI] api_end_session_start session_id={req.session_id}")
         report = eng.end_session(req.session_id)
+        print(
+            "[ClientAPI] api_end_session_success "
+            f"session_id={req.session_id} "
+            f"scene={report.get('scene_name')} "
+            f"score_keys={sorted((report.get('scores') or {}).keys())} "
+            f"npc_os_count={len(report.get('npc_os_list') or [])}"
+        )
         return {"success": True, "data": report}
     except Exception as e:
+        print(f"[ClientAPI] api_end_session_failed session_id={req.session_id} error={e}")
+        logger.exception("api_end_session_failed session_id=%s", req.session_id)
         return {"success": False, "error": str(e)}
+
+
+@app.post("/api/client-log")
+async def client_log(req: ClientLogReq):
+    payload = req.payload or {}
+    print(
+        f"[ClientLog] level={req.level} message={req.message} payload={payload}"
+    )
+    return {"success": True}
 
 
 @app.post("/api/multimodal/analyze")
@@ -1063,7 +1096,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 select{background:#fff;border:2px solid #E5E7EB;border-radius:8px;padding:10px;font-size:14px;cursor:pointer}
 select:focus{outline:none;border-color:#667eea}
 
-#p3{background:#F8FAFC;height:100vh}
+#p3{background:#F8FAFC;height:100vh;overflow:hidden}
 .ch{background:#fff;padding:14px 20px;border-bottom:1px solid #E2E8F0;display:flex;justify-content:space-between;align-items:center;position:relative;z-index:200}
 .hl{display:flex;align-items:center;gap:25px}
 .bb{padding:8px 16px;background:#4A90E2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
@@ -1139,7 +1172,7 @@ select:focus{outline:none;border-color:#667eea}
 @keyframes talkMouth{from{height:6px;width:12px}to{height:11px;width:18px}}
 @keyframes nod{0%,100%{transform:translateY(0)}50%{transform:translateY(1.5px)}}
 
-.cc{flex:1;display:flex;flex-direction:column;padding:18px;overflow:hidden}
+.cc{flex:1;display:flex;flex-direction:column;padding:18px;overflow:hidden;min-width:0}
 .mc2{flex:1;overflow-y:auto;padding:12px;background:#fff;border-radius:12px;border:1px solid #E2E8F0;margin-bottom:12px}
 .msg{max-width:75%;margin:10px 0;padding:14px 18px;border-radius:12px;animation:fadeIn .3s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
@@ -1199,8 +1232,8 @@ select:focus{outline:none;border-color:#667eea}
 .bar-bg{width:100%;height:8px;background:#E2E8F0;border-radius:4px;overflow:hidden}
 .bar-fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:4px;transition:width .3s}
 
-.mp{width:200px;background:#fff;border-left:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column;position:absolute;right:0;top:68px;bottom:0;transform:translateX(100%);transition:transform .3s ease;z-index:50}
-.mp.visible{transform:translateX(0)}
+.mp{width:220px;background:#fff;border-left:1px solid #E2E8F0;padding:18px;display:flex;flex-direction:column;position:relative;right:auto;top:auto;bottom:auto;transform:none;transition:none;z-index:1;overflow:auto}
+.mp.visible{transform:none}
 .mp .mt{font-size:13px;color:#333;font-weight:bold;text-align:center;margin-bottom:12px}
 .mp .cam-preview{width:100%;aspect-ratio:4/3;background:#1a1a1a;border-radius:10px;overflow:hidden;margin-bottom:12px;position:relative}
 .mp .cam-preview video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:none}
@@ -1279,6 +1312,25 @@ select:focus{outline:none;border-color:#667eea}
 .loading{display:flex;align-items:center;gap:15px;padding:20px}
 .spinner{width:30px;height:30px;border:3px solid #e9ecef;border-top-color:#667eea;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* Stable report layout overrides */
+#p4{background:#eef2f7;padding:24px;justify-content:flex-start;align-items:stretch;overflow:auto}
+.rc{background:#fff;border-radius:20px;padding:24px;max-width:1200px;width:100%;min-height:calc(100vh - 48px);margin:0 auto;box-shadow:0 20px 60px rgba(0,0,0,.12);color:#0f172a}
+
+/* Keep camera + microphone in a single right rail inside the page grid */
+#p3.page.active{display:grid;grid-template-columns:280px minmax(0,1fr) 220px;grid-template-rows:auto minmax(0,1fr);align-items:stretch}
+#p3 .ch{grid-column:1 / 4}
+#p3 .cm{grid-column:1 / 3;display:grid;grid-template-columns:280px minmax(0,1fr);overflow:hidden;min-width:0;min-height:0}
+#p3 .sp{width:auto}
+#p3 .cc{min-width:0;min-height:0}
+#p3 .mp{grid-column:3;grid-row:2;height:100%;max-height:100%;width:220px}
+@media (max-width: 1100px){
+#p3.page.active{grid-template-columns:1fr;grid-template-rows:auto auto auto}
+#p3 .ch{grid-column:1}
+#p3 .cm{grid-column:1;grid-template-columns:1fr}
+#p3 .sp{border-right:none;border-bottom:1px solid #E2E8F0}
+#p3 .mp{grid-column:1;grid-row:auto;border-left:none;border-top:1px solid #E2E8F0;width:auto}
+}
 
 /* Rebuilt NPC portrait panel: high contrast, state-driven expressions */
 #p3 .sp{width:280px;background:linear-gradient(180deg,#dbe7ff 0%,#f4f8ff 60%,#fff 100%);border-right:1px solid #cddcf5;padding:18px}
@@ -1502,9 +1554,9 @@ select:focus{outline:none;border-color:#667eea}
 <div class="cb" id="cb" style="display:none"><span class="cb-icon">💡</span><span class="ct2" id="ct2"></span></div>
 <div class="ia">
 <button class="mb" onclick="toggleCameraPanel()">📷</button>
-<button class="mb" id="micInputBtn" onclick="toggleM()">🎙️</button>
 <input class="ci2" id="ci2" placeholder="输入消息..." onkeypress="if(event.key==='Enter')send()" autocomplete="off" name="message_input">
 <button class="sb" onclick="send()">发送</button>
+</div>
 </div>
 </div>
 <div class="mp" id="monitorPanel">
@@ -1518,13 +1570,13 @@ select:focus{outline:none;border-color:#667eea}
 <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
 <div style="text-align:center;padding:8px;background:#f8f9fa;border-radius:8px"><span id="ei">❓</span><div style="font-size:10px;color:#666;margin-top:2px">表情</div><div id="et" style="font-size:11px;color:#333">未检测</div></div>
 </div>
-</div>
 <div style="margin-top:14px;">
     <div class="mt">🎤 麦克风</div>
     <select id="micSelect"><option value="">🎤 选择麦克风</option></select>
     <button id="mmb" onclick="toggleM()">🎤 开始录音</button>
     <div id="micStatus" style="margin-top:8px;font-size:12px;color:#666;">未录音</div>
     <div id="voiceEmotion" style="margin-top:6px;font-size:12px;color:#333;">语音情感: --</div>
+</div>
 </div>
 <button class="interrupt-fab" id="interruptBtn" onclick="interrupt()" style="display:none;">⏸️ 打断</button>
 <button class="rescue-fab" onclick="rescue()">💡 救场</button>
@@ -1561,6 +1613,8 @@ let pendingUtterances=[];
 let shouldAwaitUser=true;
 let profileSceneActive=null;
 let lastPageBeforeProfile='p1';
+let isEndingSession=false;
+let pendingEndTimeout=null;
 const pool={
 "家庭饭桌试炼":{id:"shandong_dinner",icon:"🍜",members:[
 {a:"👴",n:"大舅",r:"主陪·长辈",b:"看重礼数与体面，善于在热闹中施压"},
@@ -2171,7 +2225,11 @@ function goBackFromGame(){
         show('p2');
     }
 }
-function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));$(p).classList.add('active');const loginBtn=document.getElementById('loginBtn');if(p==='p3'&&!currentUser){loginBtn.style.display='none'}else if(!currentUser){loginBtn.style.display='block'}}
+function logClient(level,message,payload){try{fetch('/api/client-log',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({level,message,payload:payload||{}}),keepalive:true})}catch(e){}}
+window.addEventListener('error',e=>{logClient('error','window_error',{message:e.message,filename:e.filename,lineno:e.lineno,colno:e.colno})});
+window.addEventListener('unhandledrejection',e=>{logClient('error','unhandled_rejection',{reason:String(e.reason||'unknown')})});
+function ensureMonitorPanelVisible(){const panel=$('monitorPanel');if(!panel)return;panel.classList.add('visible')}
+function show(p){document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));const page=$(p);if(!page)return;page.classList.add('active');const loginBtn=document.getElementById('loginBtn');if(loginBtn){if(p==='p3'&&!currentUser){loginBtn.style.display='none'}else if(!currentUser){loginBtn.style.display='block'}}if(p==='p3')ensureMonitorPanelVisible();logClient('info','show_page',{page:p})}
 function selectPressureTag(el){
     const tag = el.dataset.tag;
     console.log('点击标签:', tag);
@@ -2706,6 +2764,7 @@ $('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
 renderConversationState('idle');
 runNonverbalLoop();
 updScr(50,50);
+setCoachHint('');
 
 // 处理面试问题显示
 const interviewQuestionBox = $('interviewQuestionBox');
@@ -2755,6 +2814,14 @@ function toggleInterviewQuestionBox(){
         arrow.textContent = '▲';
     }
 }
+function setCoachHint(text){
+    const box=$('cb');
+    const content=$('ct2');
+    if(!box||!content)return;
+    const value=String(text||'').trim();
+    content.textContent=value;
+    box.style.display=value?'flex':'none';
+}
 async function send(){
 const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';stopNpcVoice();renderConversationState('user_speaking');addUser(t);
 const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
@@ -2770,16 +2837,20 @@ const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2))
             shouldAwaitUser=true;
             $('interruptBtn').style.display='none';
         }
-        if(d.data.judgment){$('cb').style.display='flex';let judge=d.data.judgment;if(d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}$('ct2').textContent=judge}
+        let judge=d.data.judgment||'';
+        if(judge&&d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}
+        setCoachHint(judge);
         if(d.data.new_dominance)updScr(d.data.new_dominance.user,d.data.new_dominance.ai);
         if(d.data.scores)updateMetrics(d.data.scores);
-        if(d.data.game_over)setTimeout(end,2000);
+        if(d.data.game_over)scheduleEndSession(2000);
     }else{
         if(d.data.ai_text)addBot(d.data.ai_text,d.data.speaker,detectEmotion(d.data.ai_text));
-        if(d.data.judgment){$('cb').style.display='flex';let judge=d.data.judgment;if(d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}$('ct2').textContent=judge}
+        let judge=d.data.judgment||'';
+        if(judge&&d.data.npc_feedback_quality&&d.data.npc_feedback_quality.label){judge+=`（质量：${d.data.npc_feedback_quality.label}）`}
+        setCoachHint(judge);
         updScr(d.data.new_dominance.user,d.data.new_dominance.ai);
         updateMetrics(d.data.scores);
-        if(d.data.game_over)setTimeout(end,2000)
+        if(d.data.game_over)scheduleEndSession(2000)
     }
     if(d.data.multimodal_analysis&&d.data.multimodal_analysis.emotion_state){
         const em=d.data.multimodal_analysis.emotion_state.primary_emotion||'neutral';
@@ -2918,67 +2989,37 @@ function buildReportHtml(data){
     };
     const medalName=medalNames[safeData.medal]||'社交新手';
     return `
-<div style="display:flex;gap:40px;max-height:80vh;overflow:hidden;width:90%;margin:0 auto;">
-    <div style="flex:0 0 380px;display:flex;flex-direction:column;align-items:center;padding:20px;border-right:1px dashed #eee;">
-        <h1 style="margin:0;font-size:26px;color:#1a1a1a;">局后复盘</h1>
-        <p style="color:#666;font-size:13px;margin-top:4px;">在 "${safeData.scene_name||'未命名场景'}" 中的表现</p>
-        <div style="background:#e74c3c;color:white;padding:10px 20px;border-radius:12px;font-weight:800;font-size:18px;transform:rotate(-3deg);box-shadow:4px 8px 15px rgba(231,76,60,0.3);margin:20px 0;">
-            ${medalName}
+<div style="display:grid;grid-template-columns:minmax(280px,360px) minmax(0,1fr);gap:24px;width:100%;">
+    <section style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:20px;padding:24px;">
+        <div style="font-size:12px;color:#64748b;letter-spacing:.08em;text-transform:uppercase;">局后复盘</div>
+        <h1 style="margin:8px 0 0;font-size:30px;line-height:1.2;color:#0f172a;">${safeData.scene_name||'未命名场景'}</h1>
+        <div style="margin-top:14px;display:inline-flex;align-items:center;gap:8px;background:#fee2e2;color:#991b1b;padding:8px 14px;border-radius:999px;font-weight:800;">${safeData.medal||'🥉'} ${medalName}</div>
+        <div style="margin-top:22px;display:flex;justify-content:center;"><canvas id="radarChart" width="280" height="280"></canvas></div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px;">
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">圆滑度</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.oily||0}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">亲和力</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.friendliness||0}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">逻辑性</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.logic||0}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">幽默感</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.humor||0}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">懂规矩</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.respect||0}</div></div>
+            <div style="background:#fff3cd;border:1px solid #fde68a;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#92400e;">总分</div><div style="margin-top:4px;font-size:24px;font-weight:900;color:#7c2d12;">${scores.total||0}</div></div>
         </div>
-        <canvas id="radarChart" width="300" height="300" style="margin:10px 0;"></canvas>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;width:100%;margin-top:20px;">
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">圆滑度</span>
-                <b style="font-size:15px;color:#4a5dca;">${scores.oily||0}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">亲和力</span>
-                <b style="font-size:15px;color:#4a5dca;">${scores.friendliness||0}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">逻辑性</span>
-                <b style="font-size:15px;color:#4a5dca;">${scores.logic||0}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">幽默感</span>
-                <b style="font-size:15px;color:#4a5dca;">${scores.humor||0}</b>
-            </div>
-            <div style="background:#f8f9fa;padding:10px 5px;border-radius:10px;text-align:center;border:1px solid #eee;">
-                <span style="display:block;font-size:11px;color:#666;margin-bottom:4px;">懂规矩</span>
-                <b style="font-size:15px;color:#4a5dca;">${scores.respect||0}</b>
+    </section>
+    <section style="display:flex;flex-direction:column;gap:16px;min-width:0;">
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:20px;">
+            <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">综合点评</h3>
+            <p style="margin:0;font-size:14px;line-height:1.8;color:#334155;white-space:pre-wrap;">${safeData.summary||'暂无综合点评'}</p>
+        </div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:20px;">
+            <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">NPC 内心 OS</h3>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+                ${npcList.length?npcList.map(npc=>`<div style="display:flex;gap:12px;align-items:flex-start;background:#f8fafc;border-radius:14px;padding:12px;"><div style="font-size:22px;line-height:1;">${npc.avatar||'👤'}</div><div><div style="font-size:14px;font-weight:800;color:#0f172a;">${npc.name||'NPC'}</div><div style="margin-top:4px;font-size:13px;line-height:1.6;color:#475569;white-space:pre-wrap;">${npc.content||npc.os||npc.thought||'暂无内心独白'}</div></div></div>`).join(''):'<div style="font-size:13px;color:#64748b;">暂无 NPC 侧反馈</div>'}
             </div>
         </div>
-    </div>
-    <div style="flex:1;overflow-y:auto;padding-right:10px;">
-        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
-            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
-                <span style="margin-right:8px;">💬</span> 综合点评
-            </h3>
-            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${safeData.summary||'暂无综合点评'}</p>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:20px;">
+            <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">下一轮提升点</h3>
+            <p style="margin:0;font-size:14px;line-height:1.8;color:#334155;white-space:pre-wrap;">${safeData.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
         </div>
-        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);margin-bottom:15px;">
-            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
-                <span style="margin-right:8px;">🎭</span> NPC 内心 OS
-            </h3>
-            <div style="display:flex;flex-direction:column;gap:10px;">
-                ${npcList.map(npc=>`
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <div style="font-size:24px;">${renderInlineAvatar(npc.avatar,npc.name)}</div>
-                    <div>
-                        <b style="font-size:13px;color:#333;">${npc.name||'NPC'}</b>
-                        <p style="margin:3px 0 0 0;font-size:12px;color:#666;">${npc.content||npc.os||npc.thought||'暂无内心独白'}</p>
-                    </div>
-                </div>
-                `).join('')||'<div style="font-size:12px;color:#94a3b8;">暂无 NPC 侧反馈</div>'}
-            </div>
-        </div>
-        <div style="background:white;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
-            <h3 style="margin:0 0 10px 0;font-size:14px;color:#4a5dca;display:flex;align-items:center;">
-                <span style="margin-right:8px;">🚀</span> 下一轮提升点
-            </h3>
-            <p style="margin:0;font-size:13px;line-height:1.6;color:#333;">${safeData.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
-        </div>
-    </div>
+    </section>
 </div>`;
 }
 
@@ -3070,22 +3111,46 @@ function openProfile(){
 function goBackFromProfile(){
     show(lastPageBeforeProfile||'p1');
 }
+function renderEndReport(data,source='runtime'){
+    const safeData=(data&&typeof data==='object')?data:{};
+    try{
+        const html=buildReportHtml(safeData);
+        logClient('info','render_end_report_start',{source,scene_name:safeData.scene_name||'',score_keys:Object.keys(safeData.scores||{}),npc_os_count:Array.isArray(safeData.npc_os_list)?safeData.npc_os_list.length:0,html_length:html.length});
+        $('rc').innerHTML=html;
+        show('p4');
+        drawRadarChart(safeData.scores||{});
+        logClient('info','render_end_report_complete',{source});
+    }catch(renderErr){
+        logClient('error','render_end_report_failed',{source,error:String(renderErr)});
+        $('rc').innerHTML=`<div style="max-width:820px;margin:40px auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,0.08)"><h2 style="margin-top:0">复盘已生成，但页面渲染失败</h2><p><b>场景：</b>${safeData.scene_name||'本轮会话'}</p><p><b>总结：</b>${safeData.summary||'暂无总结'}</p><p><b>建议：</b>${safeData.suggestion||'暂无建议'}</p><pre style="white-space:pre-wrap;background:#f8fafc;padding:12px;border-radius:12px;font-size:12px;overflow:auto">${JSON.stringify(safeData,null,2)}</pre></div>`;
+        show('p4');
+    }
+}
 function openHistoryReport(id){
     const reports=loadReports();
     const record=reports.find(r=>r.id===id);
     if(!record)return;
-    $('rc').innerHTML=buildReportHtml(record.data);
-    drawRadarChart(record.data.scores);
-    show('p4');
+    logClient('info','open_history_report',{id,found:!!record});
+    renderEndReport(record.data,'history');
+}
+function scheduleEndSession(delayMs=0){
+    if(isEndingSession)return;
+    if(pendingEndTimeout){clearTimeout(pendingEndTimeout)}
+    pendingEndTimeout=setTimeout(()=>{pendingEndTimeout=null;end()},delayMs);
 }
 async function end(){
-    if(!sid)return;
+    if(!sid||isEndingSession)return;
+    isEndingSession=true;
+    const activeSid=sid;
     stopNpcVoice();
     try{
+        const endBtn=document.querySelector('.eb');
+        if(endBtn)endBtn.disabled=true;
+        logClient('info','end_clicked',{sid:activeSid});
         const r=await fetch('/api/session/end',{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({session_id:sid})
+            body:JSON.stringify({session_id:activeSid})
         });
         if(!r.ok){
             throw new Error(`结束会话接口异常: HTTP ${r.status}`);
@@ -3095,20 +3160,26 @@ async function end(){
             throw new Error(d.error||'结束会话失败');
         }
         const data=(d.data&&typeof d.data==='object')?d.data:{};
-        saveReportToHistory(data);
-        $('rc').innerHTML=buildReportHtml(data);
-        show('p4');
-        drawRadarChart(data.scores||{});
+        logClient('info','end_response_received',{sid:activeSid,scene_name:data.scene_name||'',score_keys:Object.keys(data.scores||{}),npc_os_count:Array.isArray(data.npc_os_list)?data.npc_os_list.length:0});
+        renderEndReport(data,'api');
+        try{
+            saveReportToHistory(data);
+            logClient('info','end_history_saved',{sid:activeSid});
+        }catch(saveErr){
+            logClient('error','end_history_save_failed',{sid:activeSid,error:String(saveErr)});
+        }
+        sid=null;
     }catch(e){
-        console.error('结束会话失败:',e);
+        logClient('error','end_failed',{sid:activeSid,error:String(e)});
         const fallback={
             scene_name:'本轮会话',
             summary:'总结生成失败，请稍后重试。',
             suggestion:'可返回继续对话，或重新开始新会话。',
             scores:{}
         };
-        $('rc').innerHTML=buildReportHtml(fallback);
-        show('p4');
+        renderEndReport(fallback,'fallback');
+    }finally{
+        isEndingSession=false;
     }
 }
 
@@ -3209,7 +3280,7 @@ function drawRadarChart(scores){
         ctx.fillText(i*20,x,y);
     }
 }
-function toggleCameraPanel(){const panel=$('monitorPanel');if(isFirstCameraClick){alert('欢迎使用摄像头功能！\n\n请选择您的摄像头设备，然后点击"开启摄像头"按钮。');isFirstCameraClick=false;}panel.classList.toggle('visible');}
+function toggleCameraPanel(){const panel=$('monitorPanel');if(!panel)return;panel.classList.add('visible');panel.scrollIntoView({behavior:'smooth',block:'nearest',inline:'nearest'});logClient('info','camera_panel_focus',{visible:true});}
 function toggleMicPanel(){if(isFirstMicClick){alert('欢迎使用麦克风功能！\n\n请选择您的麦克风设备，然后点击"开启麦克风"按钮。');isFirstMicClick=false;}toggleM2();}
 async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;vid.style.display='none';ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;vid.style.display='block';ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
 function updateEmotionDisplay(){$('val-confidence').textContent=emotionData.confidence;$('val-calm').textContent=emotionData.calm;$('val-nervous').textContent=emotionData.nervous;$('val-focus').textContent=emotionData.focus;$('bar-confidence').style.width=emotionData.confidence+'%';$('bar-calm').style.width=emotionData.calm+'%';$('bar-nervous').style.width=emotionData.nervous+'%';$('bar-focus').style.width=emotionData.focus+'%'}
