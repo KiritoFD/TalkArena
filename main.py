@@ -8,6 +8,7 @@ import os
 import logging
 import importlib.util
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -16,6 +17,7 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
 import base64
+import requests
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 
@@ -35,7 +37,107 @@ engine = None
 mm_analyzer = None
 stt_service = None
 tts_service = None
+local_stt_service = None
+local_tts_service = None
 AUDIO_OUTPUT_DIR = Path(tempfile.gettempdir()) / "talkarena_audio"
+
+# SiliconFlow defaults (user requested direct write-in).
+SILICONFLOW_API_KEY_DEFAULT = "sk-zowfpdzeiqchwkdomuljrzfdumsejnogqsjvpnpguwxyazsq"
+SILICONFLOW_BASE_URL_DEFAULT = "https://api.siliconflow.cn/v1"
+SILICONFLOW_LLM_MODEL_DEFAULT = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+SILICONFLOW_STT_MODEL_DEFAULT = "FunAudioLLM/SenseVoiceSmall"
+SILICONFLOW_TTS_MODEL_DEFAULT = "FunAudioLLM/CosyVoice2-0.5B"
+SILICONFLOW_TTS_VOICE_DEFAULT = "FunAudioLLM/CosyVoice2-0.5B:diana"
+
+
+def _truthy_env(name: str, default: str = "1") -> bool:
+    return (os.getenv(name, default) or default).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _siliconflow_api_key() -> str:
+    return (
+        os.getenv("SILICONFLOW_API_KEY")
+        or os.getenv("LLM_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or SILICONFLOW_API_KEY_DEFAULT
+    ).strip()
+
+
+def _siliconflow_base_url() -> str:
+    return (os.getenv("SILICONFLOW_BASE_URL") or SILICONFLOW_BASE_URL_DEFAULT).strip().rstrip("/")
+
+
+def _ensure_llm_env_defaults() -> None:
+    # Configure LLM defaults for SiliconFlow only when the user did not set explicit values.
+    if not os.getenv("LLM_API_KEYS") and not os.getenv("LLM_API_KEY") and not os.getenv("OPENAI_API_KEY"):
+        os.environ["LLM_API_KEY"] = _siliconflow_api_key()
+    if not os.getenv("LLM_MODEL") and not os.getenv("LLM_MODELS"):
+        os.environ["LLM_MODEL"] = os.getenv("SILICONFLOW_LLM_MODEL", SILICONFLOW_LLM_MODEL_DEFAULT)
+    if not os.getenv("LLM_BASE_URL") and not os.getenv("LLM_BASE_URLS"):
+        os.environ["LLM_BASE_URL"] = _siliconflow_base_url()
+
+
+class SiliconFlowSTTService:
+    remote = True
+
+    def __init__(self):
+        self.api_key = _siliconflow_api_key()
+        self.base_url = _siliconflow_base_url()
+        self.model = os.getenv("SILICONFLOW_STT_MODEL", SILICONFLOW_STT_MODEL_DEFAULT).strip()
+        self.timeout = float(os.getenv("SILICONFLOW_STT_TIMEOUT", "60"))
+
+    def transcribe(self, audio_bytes: bytes, filename: str = "speech.wav") -> Dict:
+        if not audio_bytes:
+            return {"text": "", "voice_features": {}}
+        url = f"{self.base_url}/audio/transcriptions"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        files = {"file": (filename, audio_bytes, "audio/wav")}
+        data = {"model": self.model}
+        resp = requests.post(url, headers=headers, files=files, data=data, timeout=self.timeout)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"SiliconFlow STT failed: HTTP {resp.status_code} {resp.text[:240]}")
+        payload = resp.json()
+        return {"text": (payload.get("text") or "").strip(), "voice_features": {}}
+
+
+class SiliconFlowTTSService:
+    remote = True
+
+    _EMOTION_TO_VOICE = {
+        "happy": "FunAudioLLM/CosyVoice2-0.5B:diana",
+        "sad": "FunAudioLLM/CosyVoice2-0.5B:claire",
+        "neutral": SILICONFLOW_TTS_VOICE_DEFAULT,
+        "angry": "FunAudioLLM/CosyVoice2-0.5B:alex",
+    }
+
+    def __init__(self):
+        self.api_key = _siliconflow_api_key()
+        self.base_url = _siliconflow_base_url()
+        self.model = os.getenv("SILICONFLOW_TTS_MODEL", SILICONFLOW_TTS_MODEL_DEFAULT).strip()
+        self.default_voice = os.getenv("SILICONFLOW_TTS_VOICE", SILICONFLOW_TTS_VOICE_DEFAULT).strip()
+        self.timeout = float(os.getenv("SILICONFLOW_TTS_TIMEOUT", "60"))
+        self.response_format = (os.getenv("SILICONFLOW_TTS_RESPONSE_FORMAT", "wav") or "wav").strip().lower()
+
+    def synthesize(self, text: str, emotion: str = "neutral", voice: str = None) -> Optional[bytes]:
+        content = (text or "").strip()
+        if not content:
+            return None
+        chosen_voice = voice or self._EMOTION_TO_VOICE.get((emotion or "neutral").lower(), self.default_voice)
+        url = f"{self.base_url}/audio/speech"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "input": content,
+            "voice": chosen_voice,
+            "response_format": self.response_format,
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"SiliconFlow TTS failed: HTTP {resp.status_code} {resp.text[:240]}")
+        return resp.content if resp.content else None
 
 
 class _MockResult:
@@ -135,14 +237,16 @@ def get_engine():
     global engine
     if engine is None:
         try:
+            _ensure_llm_env_defaults()
             from model_loader import LLMLoader
             from core.engine import TalkArenaEngine
 
             llm = LLMLoader()
             llm.load()
+            print(f"[LLM] provider={llm.provider} model={llm.model_name} base_url={llm.base_url}")
             engine = TalkArenaEngine(llm, enable_tts=True, use_unified_agent=True)
         except Exception as e:
-            print(f"[Engine] 使用回退引擎，原因: {e}")
+            print(f"[Engine] fallback engine activated: {e}")
             engine = FallbackTalkArenaEngine()
     return engine
 
@@ -165,21 +269,45 @@ def get_mm_analyzer():
     return mm_analyzer
 
 
+def get_local_stt_service():
+    global local_stt_service
+    if local_stt_service is None:
+        from core.stt_local import LocalSTTService
+
+        local_stt_service = LocalSTTService()
+    return local_stt_service
+
+
+def get_local_tts_service():
+    global local_tts_service
+    if local_tts_service is None:
+        from core.tts_local import LocalTTSService
+
+        local_tts_service = LocalTTSService()
+    return local_tts_service
+
+
 def get_stt_service():
     global stt_service
     if stt_service is None:
-        from core.stt_local import LocalSTTService
-
-        stt_service = LocalSTTService()
+        if _truthy_env("SILICONFLOW_STT_ENABLED", "1"):
+            stt_service = SiliconFlowSTTService()
+            print(f"[STT] using siliconflow model={stt_service.model}")
+        else:
+            stt_service = get_local_stt_service()
+            print("[STT] using local service")
     return stt_service
 
 
 def get_tts_service():
     global tts_service
     if tts_service is None:
-        from core.tts_local import LocalTTSService
-
-        tts_service = LocalTTSService()
+        if _truthy_env("SILICONFLOW_TTS_ENABLED", "1"):
+            tts_service = SiliconFlowTTSService()
+            print(f"[TTS] using siliconflow model={tts_service.model} voice={tts_service.default_voice}")
+        else:
+            tts_service = get_local_tts_service()
+            print("[TTS] using local service")
     return tts_service
 
 
@@ -266,16 +394,26 @@ async def start_session(req: SessionReq):
         return {"success": False, "error": str(e)}
 
     try:
-        session_id = eng.start_session(
-            scenario_id=req.scenario_id,
-            characters=req.characters or [],
-            scene_name=req.scene_name,
-            scene_description=req.scene_description,
-            user_info=req.user_info,
-            pressure_tags=req.pressure_tags or [],
-            pressure_value=req.pressure_value or 5,
-            drinking_capacity=req.drinking_capacity or 0,
-        )
+        try:
+            session_id = eng.start_session(
+                scenario_id=req.scenario_id,
+                characters=req.characters or [],
+                scene_name=req.scene_name,
+                scene_description=req.scene_description,
+                user_info=req.user_info,
+                pressure_tags=req.pressure_tags or [],
+                pressure_value=req.pressure_value or 5,
+                drinking_capacity=req.drinking_capacity or 0,
+            )
+        except TypeError:
+            # Backward compatibility for lightweight test/mocked engines.
+            session_id = eng.start_session(
+                scenario_id=req.scenario_id,
+                characters=req.characters or [],
+                scene_name=req.scene_name,
+                scene_description=req.scene_description,
+                user_info=req.user_info,
+            )
 
         if hasattr(eng, 'use_unified_agent') and eng.use_unified_agent:
             for result in eng.process_turn(session_id, "", is_interrupt=False):
@@ -488,7 +626,16 @@ if MULTIPART_AVAILABLE:
         try:
             audio_bytes = await file.read()
             service = get_stt_service()
-            result = service.transcribe(audio_bytes)
+            try:
+                result = service.transcribe(audio_bytes)
+            except Exception as remote_err:
+                if getattr(service, "remote", False):
+                    print(f"[STT] siliconflow failed, fallback local: {remote_err}")
+                    local = get_local_stt_service()
+                    result = local.transcribe(audio_bytes)
+                else:
+                    raise
+
             analyzer = get_mm_analyzer()
             mm_result = analyzer.analyze_multimodal(
                 text=result.get("text", ""),
@@ -519,10 +666,20 @@ else:
 async def tts(req: TTSReq):
     try:
         service = get_tts_service()
-        audio_bytes = service.synthesize(req.text, req.emotion or "neutral")
+        try:
+            audio_bytes = service.synthesize(req.text, req.emotion or "neutral")
+        except Exception as remote_err:
+            if getattr(service, "remote", False):
+                print(f"[TTS] siliconflow failed, fallback local: {remote_err}")
+                local = get_local_tts_service()
+                audio_bytes = local.synthesize(req.text, req.emotion or "neutral")
+            else:
+                raise
+
         if not audio_bytes:
             return {"success": False, "error": "TTS failed"}
-        filename = f"tts_{int(__import__('time').time() * 1000)}.wav"
+
+        filename = f"tts_{int(time.time() * 1000)}.wav"
         AUDIO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         out_path = AUDIO_OUTPUT_DIR / filename
         with open(out_path, "wb") as f:
