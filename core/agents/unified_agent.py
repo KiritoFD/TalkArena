@@ -138,7 +138,7 @@ class UnifiedAgent:
             return ""
         
         lines = []
-        for turn in history[-8:]:
+        for turn in history[-4:]:
             if turn.is_user:
                 lines.append(f"用户：{turn.text}")
             else:
@@ -212,7 +212,7 @@ class UnifiedAgent:
                     NPCUtterance(
                         npc_id=u.get("npc_id", ""),
                         text=u.get("text", ""),
-                        delay_ms=u.get("delay_ms", 1500),
+                        delay_ms=u.get("delay_ms", 700),
                     )
                     for u in data.get("utterances", [])
                 ]
@@ -257,7 +257,7 @@ class UnifiedAgent:
                         utterances.append(NPCUtterance(
                             npc_id=char_name,
                             text=opening_text,
-                            delay_ms=3000 if i > 0 else 0,
+                            delay_ms=700 if i > 0 else 0,
                         ))
                     return UnifiedAgentResponse(
                         utterances=utterances,
@@ -294,7 +294,7 @@ class UnifiedAgent:
             utterances.append(NPCUtterance(
                 npc_id=speaker.name,
                 text=text,
-                delay_ms=3000 if i > 0 else 0,
+                delay_ms=700 if i > 0 else 0,
             ))
         
         return UnifiedAgentResponse(
@@ -339,7 +339,7 @@ class UnifiedAgent:
                     drinking_capacity=drinking_capacity or 0,
                 )
                 
-                response = self.llm.generate(prompt, max_new_tokens=800, temperature=0.7)
+                response = self.llm.generate(prompt, max_new_tokens=260, temperature=0.7)
                 result = self._parse_llm_response(response)
                 
                 if result.utterances:

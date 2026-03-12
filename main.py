@@ -3055,7 +3055,7 @@ function addBotStreaming(t,sp,emo){
                 mco.textContent+=t.charAt(idx);
                 idx++;
                 c.scrollTop=c.scrollHeight;
-                setTimeout(typeChar,30);
+                setTimeout(typeChar,10);
             }else{
                 if(speaker){
                     setTimeout(()=>renderConversationState('after_npc',speaker),700);
@@ -3090,7 +3090,7 @@ async function displayUtterances(){
     
     await addBotStreaming(utterance.text,speakerName,detectEmotion(utterance.text));
     
-    const delay=utterance.delay_ms||3000;
+    const delay=Math.max(300,Math.min(900,Number(utterance.delay_ms)||700));
     setTimeout(displayUtterances,delay);
 }
 
