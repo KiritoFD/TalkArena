@@ -194,6 +194,9 @@ class SessionReq(BaseModel):
     characters: Optional[List[Dict]] = []
     scene_description: Optional[str] = ""
     user_info: Optional[Dict] = None
+    pressure_tags: Optional[List[str]] = []
+    pressure_value: Optional[int] = 5
+    drinking_capacity: Optional[int] = 0
 
 
 class MMReq(BaseModel):
@@ -261,6 +264,9 @@ async def start_session(req: SessionReq):
             scene_name=req.scene_name,
             scene_description=req.scene_description,
             user_info=req.user_info,
+            pressure_tags=req.pressure_tags or [],
+            pressure_value=req.pressure_value or 5,
+            drinking_capacity=req.drinking_capacity or 0,
         )
 
         if hasattr(eng, 'use_unified_agent') and eng.use_unified_agent:
@@ -2722,7 +2728,7 @@ if(scene === '群面竞争场'){
     interviewQuestionBox.style.display = 'none';
 }
 
-try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:sceneDescription,user_info:(window.userInfo||null)})});
+try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:sceneDescription,user_info:(window.userInfo||null),pressure_tags:selectedPressureTags,pressure_value:pressureValue,drinking_capacity:drinkingCapacity})});
 const d=await r.json();if(!d.success){alert(d.error);return}
 sid=d.data.session_id;
 if(d.data.is_unified_agent){

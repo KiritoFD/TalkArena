@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Generator
 from dataclasses import dataclass, field
 from model_loader import LLMLoader, TTSLoader
+from core.prompts import get_rescue_master_fallback_prompt, get_scene_system_prompt
 
 LOG_DIR = Path("outputs/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -491,24 +492,13 @@ class Orchestrator:
         context_lines = [f"{name}: {text}" for name, text in session.chat_history[-10:]]
         context = "\n".join(context_lines)
         
-        prompt = f"""你是一位顶尖的沟通专家。用户在以下场景中需要帮助，请你以用户的身份（晚辈/下属）生成一段高情商回复供其参考。
-
-【场景】{scenario['name']}
-【对手】{session.ai_name}
-【当前气场】用户 {session.user_dominance} vs AI {session.ai_dominance}
-
-【对话历史】
-{context}
-
-【任务】
-你要以用户（晚辈/下属）的第一人称身份生成一条得体的回复，用户可以直接复制发送。
-要求：
-1. 必须以第一人称说话（“我...”），不能用第三人称（禁止“你应该...”“可以说...”）
-2. 简短有力，直击要害，不超过50字
-3. 符合晚辈/下属身份，谦逊但不失气场
-4. 能化解困境或扶回局势
-
-请直接输出台词，不要有任何解释。"""
+        prompt = get_rescue_master_fallback_prompt(
+            scene_name=scenario['name'],
+            ai_name=session.ai_name,
+            user_dominance=session.user_dominance,
+            ai_dominance=session.ai_dominance,
+            context=context
+        )
         
         suggestion = self.llm.generate(prompt, max_new_tokens=150)
         logger.info(f"[救场] Session {session_id} 生成建议: {suggestion[:50]}...")
