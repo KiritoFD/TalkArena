@@ -118,6 +118,9 @@ class TalkArenaEngine:
         scene_name: str = "",
         scene_description: str = "",
         user_info: Optional[Dict] = None,
+        pressure_tags: Optional[List[str]] = None,
+        pressure_value: Optional[int] = None,
+        drinking_capacity: Optional[int] = None,
     ) -> str:
         from core.validators.output_validator import OutputValidator
 
@@ -142,6 +145,9 @@ class TalkArenaEngine:
             "history": [],
             "scores_history": [],
             "unified_history": [],
+            "pressure_tags": pressure_tags or [],
+            "pressure_value": pressure_value or 5,
+            "drinking_capacity": drinking_capacity or 0,
         }
         self.validators[sid] = OutputValidator(scenario.get("characters", []))
         return sid
@@ -173,6 +179,9 @@ class TalkArenaEngine:
                 custom_characters=session["scenario"].get("characters", []),
                 conversation_history=conversation_history,
                 is_interrupt=is_interrupt,
+                pressure_tags=session.get("pressure_tags", []),
+                pressure_value=session.get("pressure_value", 5),
+                drinking_capacity=session.get("drinking_capacity", 0),
             )
 
             if user_input:
@@ -303,17 +312,63 @@ class TalkArenaEngine:
         if session_id not in self.sessions:
             return "会话不存在"
 
-        fallback_suggestions = [
-            "要不咱先喝口茶，慢慢说？",
-            "这个事确实有意思，你怎么看？",
-            "来，咱换个轻松点的话题？",
-            "要不咱先吃点菜，边吃边聊？",
-            "你说的有道理，那接下来呢？",
-        ]
+        session = self.sessions[session_id]
+        
+        if not self.llm:
+            fallback_suggestions = [
+                "要不咱先喝口茶，慢慢说？",
+                "这个事确实有意思，你怎么看？",
+                "来，咱换个轻松点的话题？",
+                "要不咱先吃点菜，边吃边聊？",
+                "你说的有道理，那接下来呢？",
+            ]
+            import random
+            return random.choice(fallback_suggestions)
 
-        import random
+        from core.prompts import get_rescue_master_prompt
 
-        return random.choice(fallback_suggestions)
+        scenario_id = session.get("scenario_id", "shandong_dinner")
+        scene_name = session.get("scene_name", "场景")
+        dominance = session.get("dominance", {"user": 50, "ai": 50})
+        user_dominance = dominance.get("user", 50)
+        ai_dominance = dominance.get("ai", 50)
+
+        history = session.get("history", [])
+        npc_list = session["scenario"].get("characters", [])
+        ai_name = npc_list[0].get("name", "AI") if npc_list else "AI"
+
+        context = ""
+        for turn in history[-5:]:
+            speaker = turn.get("speaker", "NPC")
+            text = turn.get("text", "")
+            context += f"{speaker}：{text}\n"
+
+        prompt = get_rescue_master_prompt(
+            scenario_id=scenario_id,
+            scene_name=scene_name,
+            ai_name=ai_name,
+            user_dominance=user_dominance,
+            ai_dominance=ai_dominance,
+            context=context
+        )
+
+        try:
+            suggestion = self.llm.generate(prompt, max_new_tokens=100, temperature=0.7)
+            suggestion = suggestion.strip()
+            if not suggestion:
+                raise ValueError("空响应")
+            return suggestion
+        except Exception as e:
+            logger.error(f"救场建议生成失败: {e}")
+            fallback_suggestions = [
+                "要不咱先喝口茶，慢慢说？",
+                "这个事确实有意思，你怎么看？",
+                "来，咱换个轻松点的话题？",
+                "要不咱先吃点菜，边吃边聊？",
+                "你说的有道理，那接下来呢？",
+            ]
+            import random
+            return random.choice(fallback_suggestions)
 
     def end_session(self, session_id: str) -> Dict[str, Any]:
         if session_id not in self.sessions:

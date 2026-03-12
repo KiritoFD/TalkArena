@@ -13,6 +13,7 @@ from .unified_agent_contracts import (
     UnifiedAgentResponse,
     SceneType,
 )
+from ..prompts import get_unified_agent_dialogue_prompt
 
 logger = logging.getLogger("UnifiedAgent")
 
@@ -152,6 +153,9 @@ class UnifiedAgent:
         characters: List[NPCCharacter],
         history: List[ConversationTurn],
         is_interrupt: bool = False,
+        pressure_tags: Optional[List[str]] = None,
+        pressure_value: Optional[int] = None,
+        drinking_capacity: Optional[int] = None,
     ) -> str:
         scene = self._resolve_scene(scenario_id)
         history_str = self._build_history_str(history)
@@ -167,47 +171,31 @@ class UnifiedAgent:
         
         user_input_hint = f"用户刚说：{user_input}" if user_input else "对话刚开始，请开场。"
         
-        return f"""你是一个酒局/对话场景的总导演，负责操控所有NPC进行自然对话。
-
-场景：{scene.get('name', '对话')}
-场景氛围：{scene.get('atmosphere', '')}
-修辞要求：{scene.get('rhetoric', '')}
-
-在场的NPC：
-{chars_desc}
-
-之前的对话：
-{history_str if history_str else '（暂无对话）'}
-
-{interrupt_hint}
-{user_input_hint}
-
-你的任务：
-1. 生成「一轮」完整的NPC对话
-2. 「一轮」指的是：从上一次用户发言后，到下一次等待用户发言前的所有对话
-3. 这一轮对话结束后，必须把话头抛给用户
-4. 为每个NPC生成符合其性格的对话内容
-
-输出格式（JSON）：
-{{
-    "utterances": [
-        {{
-            "npc_id": "NPC名字",
-            "text": "对话内容（不超过{scene.get('word_limit', 60)}字）",
-            "delay_ms": 1200
-        }}
-    ],
-    "should_await_user": true,
-    "reason": "简要说明决策原因"
-}}
-
-规则说明：
-- should_await_user 必须设置为 true，表示这一轮对话结束后等待用户发言
-- 每个NPC的对话要符合其性格设定
-- NPC之间可以有来有回地对话
-- 一轮对话最多包含3-4个NPC的发言
-- 最后一个NPC的发言要自然地把话头抛给用户
-- delay_ms建议在800-2000毫秒之间"""
+        pressure_hint = ""
+        if pressure_tags and len(pressure_tags) > 0:
+            pressure_hint = f"用户压力敏感区：{', '.join(pressure_tags)}。\n压力强度：{pressure_value or 5}/10（10为最高）。\n请NPC在对话中主动试探这些敏感话题，制造相应强度的社交压力。"
+        
+        drinking_hint = ""
+        if drinking_capacity and drinking_capacity > 0:
+            drinking_desc = {
+                1: "很差，几乎不喝，一杯就倒",
+                2: "一般，只能喝一点，容易醉",
+                3: "不错，酒量较好，能喝不少",
+            }
+            drinking_hint = f"用户酒量：{drinking_desc.get(drinking_capacity, '未知')}（{drinking_capacity}/3星）。\n请NPC在对话中根据用户酒量来劝酒或安排酒局节奏。"
+        
+        return get_unified_agent_dialogue_prompt(
+            scene_name=scene.get('name', '对话'),
+            atmosphere=scene.get('atmosphere', ''),
+            rhetoric=scene.get('rhetoric', ''),
+            pressure_hint=pressure_hint,
+            drinking_hint=drinking_hint,
+            chars_desc=chars_desc,
+            history_str=history_str if history_str else '（暂无对话）',
+            interrupt_hint=interrupt_hint,
+            user_input_hint=user_input_hint,
+            word_limit=scene.get('word_limit', 60)
+        )
 
     def _parse_llm_response(self, raw_text: str) -> UnifiedAgentResponse:
         try:
@@ -322,6 +310,9 @@ class UnifiedAgent:
         custom_characters: Optional[List[Dict]] = None,
         conversation_history: Optional[List[Dict]] = None,
         is_interrupt: bool = False,
+        pressure_tags: Optional[List[str]] = None,
+        pressure_value: Optional[int] = None,
+        drinking_capacity: Optional[int] = None,
     ) -> UnifiedAgentResponse:
         characters = self._get_characters(scenario_id, custom_characters)
         
@@ -343,6 +334,9 @@ class UnifiedAgent:
                     characters=characters,
                     history=history,
                     is_interrupt=is_interrupt,
+                    pressure_tags=pressure_tags or [],
+                    pressure_value=pressure_value or 5,
+                    drinking_capacity=drinking_capacity or 0,
                 )
                 
                 response = self.llm.generate(prompt, max_new_tokens=800, temperature=0.7)
