@@ -188,13 +188,37 @@ function setCoachHint(text){
     content.textContent=value;
     box.style.display=value?'flex':'none';
 }
+
+function _startAsyncJudge(payload){
+    setCoachHint('AI判官评估中...');
+    return fetch('/api/chat/judge',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+    })
+    .then(r=>r.json())
+    .then(d=>{
+        if(!d||!d.success||!d.data)return;
+        if(llmBusyCount<=0)return;
+        const score=Number(d.data.score);
+        const scoreText=Number.isFinite(score)?`（${Math.round(score)}分）`:'';
+        const text=String(d.data.text||'').trim();
+        if(text){
+            setCoachHint(`AI判官${scoreText}：${text}`);
+        }
+    })
+    .catch(()=>{});
+}
+
 async function send(){
 const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';stopNpcVoice();renderConversationState('user_speaking');addUser(t);
 await unlockNpcAudio();
 const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 _setLlmBusy(true,'时间暂停，众人思考中');
-try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal,chat_history:buildChatHistoryPayload(),scenario_id:selectedScenarioId,scene_name:scene,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),characters:chars,fast_mode:!!window.fastModeEnabled})});
+const reqPayload={session_id:sid,message:t,multimodal:multimodal,chat_history:buildChatHistoryPayload(),scenario_id:selectedScenarioId,scene_name:scene,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),characters:chars,fast_mode:!!window.fastModeEnabled};
+_startAsyncJudge(reqPayload);
+try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(reqPayload)});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
     window.__lastChatResponseAt=performance.now();
     if(d.data.utterances){

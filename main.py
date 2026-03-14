@@ -192,7 +192,7 @@ def _truthy_env(name: str, default: str = "1") -> bool:
 
 
 def _fast_mode_enabled() -> bool:
-    return _truthy_env("TALKARENA_FAST_MODE", "1")
+    return _truthy_env("TALKARENA_FAST_MODE", "0")
 
 
 def _set_runtime_mode(fast_mode: bool, reason: str = "") -> None:
@@ -1298,10 +1298,19 @@ def _prebuild_utterance_tts(
     return utterances
 
 
-def _siliconflow_chat_generate(prompt: str, system_prompt: str = "你是高情商救场助手。", temperature: float = 0.7, max_tokens: int = 220) -> str:
+def _siliconflow_chat_generate(
+    prompt: str,
+    system_prompt: str = "你是高情商救场助手。",
+    temperature: float = 0.7,
+    max_tokens: int = 220,
+    model_override: Optional[str] = None,
+) -> str:
     api_key = _siliconflow_api_key()
     base_url = _siliconflow_base_url()
-    model = os.getenv("SILICONFLOW_LLM_MODEL", SILICONFLOW_CONFIG.llm_model_default).strip()
+    model = str(
+        model_override
+        or os.getenv("SILICONFLOW_LLM_MODEL", SILICONFLOW_CONFIG.llm_model_default)
+    ).strip()
     url = f"{base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -1325,6 +1334,55 @@ def _siliconflow_chat_generate(prompt: str, system_prompt: str = "你是高情�
         return ""
     msg = choices[0].get("message") or {}
     return str(msg.get("content") or "").strip()
+
+
+def _build_judge_context(req: ChatReq, session: Optional[Dict]) -> Dict[str, str]:
+    scenario_id = (req.scenario_id or "shandong_dinner").strip() or "shandong_dinner"
+    scene_name = (req.scene_name or "场景对话").strip() or "场景对话"
+    if isinstance(session, dict):
+        scenario_id = str(session.get("scenario_id") or scenario_id).strip() or scenario_id
+        scene_name = str(session.get("scene_name") or scene_name).strip() or scene_name
+    chars = req.characters or []
+    if (not chars) and isinstance(session, dict):
+        chars = ((session.get("scenario") or {}).get("characters") or [])
+
+    names: List[str] = []
+    for c in chars[:5]:
+        if isinstance(c, dict):
+            n = str(c.get("n") or c.get("name") or "").strip()
+            r = str(c.get("r") or c.get("role") or "").strip()
+            if n:
+                names.append(f"{n}({r})" if r else n)
+
+    lines: List[str] = []
+    for t in (req.chat_history or [])[-8:]:
+        if not isinstance(t, dict):
+            continue
+        role = str(t.get("role") or "").strip().lower()
+        speaker = str(t.get("speaker") or "").strip()
+        content = str(t.get("content") or "").strip()
+        if not content:
+            continue
+        if role == "user":
+            lines.append(f"用户：{content}")
+        else:
+            lines.append(f"{speaker or 'NPC'}：{content}")
+    if not lines and isinstance(session, dict):
+        for t in (session.get("unified_history") or [])[-8:]:
+            if not isinstance(t, dict):
+                continue
+            content = str(t.get("text") or "").strip()
+            if not content:
+                continue
+            speaker = str(t.get("speaker") or ("用户" if t.get("is_user") else "NPC")).strip()
+            lines.append(f"{speaker}：{content}")
+
+    return {
+        "scenario_id": scenario_id,
+        "scene_name": scene_name,
+        "characters": "、".join(names),
+        "history": "\n".join(lines).strip(),
+    }
 
 
 def _build_rescue_context_from_session(session: Dict) -> Dict[str, str]:
@@ -1760,6 +1818,78 @@ async def rescue(req: ChatReq):
         except Exception as llm_err:
             raise RuntimeError(f"Rescue direct llm failed: {llm_err}") from llm_err
         raise RuntimeError("Rescue generated empty response; fallback disabled.")
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/chat/judge")
+async def judge(req: ChatReq):
+    if not req.session_id:
+        return {"success": False, "error": "无效会话"}
+    if not str(req.message or "").strip():
+        return {"success": False, "error": "消息为空"}
+
+    try:
+        eng = get_engine()
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    if req.session_id not in eng.sessions:
+        _try_restore_session_snapshot(eng, req.session_id)
+    if req.session_id not in eng.sessions:
+        _rehydrate_session_from_request(eng, req)
+
+    try:
+        session = eng.sessions.get(req.session_id, {}) if hasattr(eng, "sessions") else {}
+        ctx = _build_judge_context(req, session if isinstance(session, dict) else {})
+        fast_model = os.getenv(
+            "SILICONFLOW_FAST_JUDGE_MODEL",
+            SILICONFLOW_CONFIG.llm_model_fast_default,
+        ).strip()
+        prompt = (
+            "你是“AI判官”，请快速评价用户刚刚这句话在当前场景下的表现。\n"
+            "输出严格 JSON：{\"score\":0-100整数,\"tone\":\"一句简评\",\"next\":\"一句可执行建议\"}\n"
+            "不要输出任何额外文本。\n\n"
+            f"场景ID：{ctx['scenario_id']}\n"
+            f"场景名：{ctx['scene_name']}\n"
+            f"NPC：{ctx['characters'] or '未知'}\n"
+            f"最近对话：\n{ctx['history'] or '（暂无）'}\n"
+            f"用户最新发言：{str(req.message).strip()}\n"
+        )
+        t0 = time.perf_counter()
+        raw = _siliconflow_chat_generate(
+            prompt,
+            system_prompt="你是严格按格式输出JSON的中文对话评审助手。",
+            temperature=0.2,
+            max_tokens=120,
+            model_override=fast_model,
+        )
+        score = 60
+        tone = ""
+        nxt = ""
+        try:
+            parsed = json.loads(raw)
+            score = int(parsed.get("score", 60) or 60)
+            tone = str(parsed.get("tone") or "").strip()
+            nxt = str(parsed.get("next") or "").strip()
+        except Exception:
+            tone = raw.strip()
+        score = max(0, min(100, score))
+        text = f"{tone} 建议：{nxt}".strip()
+        if not text:
+            text = "表达还算稳，但可以更具体一点，先给结论再补依据。"
+        print(
+            "[Judge] complete "
+            f"sid={req.session_id} model={fast_model} "
+            f"cost_ms={int((time.perf_counter()-t0)*1000)} score={score}"
+        )
+        return {
+            "success": True,
+            "data": {
+                "score": score,
+                "text": text,
+                "model": fast_model,
+            },
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
