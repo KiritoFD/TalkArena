@@ -21,6 +21,15 @@ import requests
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 
+from config.siliconflow import (
+    SILICONFLOW_CONFIG,
+    infer_age_group,
+    infer_demographics_from_text,
+    normalize_gender,
+    siliconflow_api_key,
+    siliconflow_base_url,
+)
+
 app = FastAPI(title="TalkArena")
 MULTIPART_AVAILABLE = importlib.util.find_spec("multipart") is not None
 logger = logging.getLogger("TalkArenaAPI")
@@ -41,30 +50,16 @@ local_stt_service = None
 local_tts_service = None
 AUDIO_OUTPUT_DIR = Path(tempfile.gettempdir()) / "talkarena_audio"
 
-# SiliconFlow defaults (user requested direct write-in).
-SILICONFLOW_API_KEY_DEFAULT = "sk-zowfpdzeiqchwkdomuljrzfdumsejnogqsjvpnpguwxyazsq"
-SILICONFLOW_BASE_URL_DEFAULT = "https://api.siliconflow.cn/v1"
-SILICONFLOW_LLM_MODEL_DEFAULT = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-SILICONFLOW_STT_MODEL_DEFAULT = "FunAudioLLM/SenseVoiceSmall"
-SILICONFLOW_TTS_MODEL_DEFAULT = "FunAudioLLM/CosyVoice2-0.5B"
-SILICONFLOW_TTS_VOICE_DEFAULT = "FunAudioLLM/CosyVoice2-0.5B:diana"
-
-
 def _truthy_env(name: str, default: str = "1") -> bool:
     return (os.getenv(name, default) or default).strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _siliconflow_api_key() -> str:
-    return (
-        os.getenv("SILICONFLOW_API_KEY")
-        or os.getenv("LLM_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or SILICONFLOW_API_KEY_DEFAULT
-    ).strip()
+    return siliconflow_api_key()
 
 
 def _siliconflow_base_url() -> str:
-    return (os.getenv("SILICONFLOW_BASE_URL") or SILICONFLOW_BASE_URL_DEFAULT).strip().rstrip("/")
+    return siliconflow_base_url()
 
 
 def _ensure_llm_env_defaults() -> None:
@@ -72,7 +67,7 @@ def _ensure_llm_env_defaults() -> None:
     if not os.getenv("LLM_API_KEYS") and not os.getenv("LLM_API_KEY") and not os.getenv("OPENAI_API_KEY"):
         os.environ["LLM_API_KEY"] = _siliconflow_api_key()
     if not os.getenv("LLM_MODEL") and not os.getenv("LLM_MODELS"):
-        os.environ["LLM_MODEL"] = os.getenv("SILICONFLOW_LLM_MODEL", SILICONFLOW_LLM_MODEL_DEFAULT)
+        os.environ["LLM_MODEL"] = os.getenv("SILICONFLOW_LLM_MODEL", SILICONFLOW_CONFIG.llm_model_default)
     if not os.getenv("LLM_BASE_URL") and not os.getenv("LLM_BASE_URLS"):
         os.environ["LLM_BASE_URL"] = _siliconflow_base_url()
 
@@ -83,7 +78,7 @@ class SiliconFlowSTTService:
     def __init__(self):
         self.api_key = _siliconflow_api_key()
         self.base_url = _siliconflow_base_url()
-        self.model = os.getenv("SILICONFLOW_STT_MODEL", SILICONFLOW_STT_MODEL_DEFAULT).strip()
+        self.model = os.getenv("SILICONFLOW_STT_MODEL", SILICONFLOW_CONFIG.stt_model_default).strip()
         self.timeout = float(os.getenv("SILICONFLOW_STT_TIMEOUT", "60"))
 
     def transcribe(self, audio_bytes: bytes, filename: str = "speech.wav") -> Dict:
@@ -103,26 +98,47 @@ class SiliconFlowSTTService:
 class SiliconFlowTTSService:
     remote = True
 
-    _EMOTION_TO_VOICE = {
-        "happy": "FunAudioLLM/CosyVoice2-0.5B:diana",
-        "sad": "FunAudioLLM/CosyVoice2-0.5B:claire",
-        "neutral": SILICONFLOW_TTS_VOICE_DEFAULT,
-        "angry": "FunAudioLLM/CosyVoice2-0.5B:alex",
-    }
+    _EMOTION_TO_VOICE = SILICONFLOW_CONFIG.tts_emotion_voice_map
 
     def __init__(self):
         self.api_key = _siliconflow_api_key()
         self.base_url = _siliconflow_base_url()
-        self.model = os.getenv("SILICONFLOW_TTS_MODEL", SILICONFLOW_TTS_MODEL_DEFAULT).strip()
-        self.default_voice = os.getenv("SILICONFLOW_TTS_VOICE", SILICONFLOW_TTS_VOICE_DEFAULT).strip()
+        self.model = os.getenv("SILICONFLOW_TTS_MODEL", SILICONFLOW_CONFIG.tts_model_default).strip()
+        self.default_voice = os.getenv("SILICONFLOW_TTS_VOICE", SILICONFLOW_CONFIG.tts_voice_default).strip()
         self.timeout = float(os.getenv("SILICONFLOW_TTS_TIMEOUT", "60"))
         self.response_format = (os.getenv("SILICONFLOW_TTS_RESPONSE_FORMAT", "wav") or "wav").strip().lower()
 
-    def synthesize(self, text: str, emotion: str = "neutral", voice: str = None) -> Optional[bytes]:
+    def _resolve_voice(self, emotion: str = "neutral", voice: str = None, speaker_profile: Optional[Dict] = None) -> str:
+        if voice:
+            return voice
+        profile = speaker_profile or {}
+        gender = normalize_gender(str(profile.get("gender") or profile.get("sex") or ""))
+        age_group = str(profile.get("age_group") or "").strip().lower() or infer_age_group(profile.get("age"))
+
+        if not (gender and age_group):
+            hint_text = " ".join(
+                [
+                    str(profile.get("name") or ""),
+                    str(profile.get("role") or ""),
+                    str(profile.get("personality") or ""),
+                    str(profile.get("background") or ""),
+                ]
+            ).strip()
+            inferred = infer_demographics_from_text(hint_text)
+            gender = gender or inferred.get("gender", "")
+            age_group = age_group or inferred.get("age_group", "adult")
+
+        if gender and age_group:
+            role_voice = SILICONFLOW_CONFIG.tts_role_voice_map.get(f"{gender}:{age_group}")
+            if role_voice:
+                return role_voice
+        return self._EMOTION_TO_VOICE.get((emotion or "neutral").lower(), self.default_voice)
+
+    def synthesize(self, text: str, emotion: str = "neutral", voice: str = None, speaker_profile: Optional[Dict] = None) -> Optional[bytes]:
         content = (text or "").strip()
         if not content:
             return None
-        chosen_voice = voice or self._EMOTION_TO_VOICE.get((emotion or "neutral").lower(), self.default_voice)
+        chosen_voice = self._resolve_voice(emotion=emotion, voice=voice, speaker_profile=speaker_profile)
         url = f"{self.base_url}/audio/speech"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -131,9 +147,10 @@ class SiliconFlowTTSService:
         payload = {
             "model": self.model,
             "input": content,
-            "voice": chosen_voice,
             "response_format": self.response_format,
         }
+        if chosen_voice:
+            payload["voice"] = chosen_voice
         resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
         if resp.status_code >= 400:
             raise RuntimeError(f"SiliconFlow TTS failed: HTTP {resp.status_code} {resp.text[:240]}")
@@ -361,6 +378,8 @@ class ContentOptimizeReq(BaseModel):
 class TTSReq(BaseModel):
     text: str
     emotion: Optional[str] = "neutral"
+    speaker: Optional[str] = None
+    speaker_profile: Optional[Dict] = None
 
 
 @app.get("/favicon.ico")
@@ -667,7 +686,7 @@ async def tts(req: TTSReq):
     try:
         service = get_tts_service()
         try:
-            audio_bytes = service.synthesize(req.text, req.emotion or "neutral")
+            audio_bytes = service.synthesize(req.text, req.emotion or "neutral", speaker_profile=req.speaker_profile)
         except Exception as remote_err:
             if getattr(service, "remote", False):
                 print(f"[TTS] siliconflow failed, fallback local: {remote_err}")
