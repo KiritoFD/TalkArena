@@ -151,13 +151,24 @@ function prefetchNpcSpeech(text,emotion,speaker){
         ttsPendingMap.delete(key);
     });
 }
+function prepareNpcSpeech(text,emotion,speaker,preferredUrl=''){
+    const clean=String(text||'').replace(/^\s*[^：:]{1,6}[：:]\s*/,'').trim();
+    if(!clean||!npcVoiceEnabled)return Promise.resolve('');
+    const pUrl=String(preferredUrl||'').trim();
+    if(pUrl){
+        seedNpcSpeechCache(clean,emotion||'neutral',speaker||'',pUrl);
+        return Promise.resolve(pUrl);
+    }
+    return _getTTSUrl(clean,emotion||'neutral',speaker||'');
+}
 async function waitForAudioTurn(nextSpeaker,nextDelayMs=700){
     const audio=npcActiveAudio;
     if(!audio||audio.ended||audio.paused)return;
     await npcActiveEndPromise.catch(()=>{});
 }
-async function _playNpcAudio(url,speaker){
+async function _playNpcAudio(url,speaker,diag={}){
     if(!url||!npcVoiceEnabled)return;
+    const tStart=performance.now();
     npcAudio=new Audio(url);
     npcActiveAudio=npcAudio;
     npcActiveSpeaker=speaker||'';
@@ -168,22 +179,43 @@ async function _playNpcAudio(url,speaker){
     });
     try{
         await npcAudio.play();
+        const playMs=Math.round(performance.now()-tStart);
+        console.log(
+            `[SpeechLatency] play_start speaker=${speaker||''} play_ms=${playMs} `+
+            `from_send_ms=${Math.round((performance.now()-(window.__lastChatResponseAt||performance.now())))} `+
+            `fetch_tts_ms=${diag.fetchTtsMs??-1} text_len=${diag.textLen??-1}`
+        );
     }catch(e){
         console.warn('[TTS] play blocked/failed:',e);
     }
     await npcActiveEndPromise;
 }
-async function speakNPC(text,emotion,speaker){
+async function speakNPC(text,emotion,speaker,opts={}){
     if(!npcVoiceEnabled)return;
     const clean=String(text||'').replace(/^\s*[^：:]{1,6}[：:]\s*/,'').trim();
     if(!clean)return;
-    const url=await _getTTSUrl(clean,emotion||'neutral',speaker||'');
+    const preferredUrl=String(opts?.preferredUrl||'').trim();
+    const preparedPromise=opts?.preparedPromise&&typeof opts.preparedPromise.then==='function'
+        ? opts.preparedPromise
+        : null;
+    const tTts=performance.now();
+    let url=preferredUrl;
+    if(!url&&preparedPromise){
+        try{ url=await preparedPromise; }catch(e){ url=''; }
+    }
+    if(!url){
+        url=await _getTTSUrl(clean,emotion||'neutral',speaker||'');
+    }
+    const fetchTtsMs=preferredUrl?0:Math.round(performance.now()-tTts);
     if(!url)return;
-    await _playNpcAudio(url,speaker||'');
+    await _playNpcAudio(url,speaker||'',{
+        fetchTtsMs,
+        textLen:clean.length
+    });
 }
-function enqueueNPCSpeech(text,emotion,speaker){
+function enqueueNPCSpeech(text,emotion,speaker,opts={}){
     npcSpeechQueue=npcSpeechQueue
-        .then(()=>speakNPC(text,emotion,speaker))
+        .then(()=>speakNPC(text,emotion,speaker,opts))
         .catch((e)=>{console.warn('[TTSQueue] play failed:',e);});
     return npcSpeechQueue;
 }

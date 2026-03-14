@@ -6,6 +6,24 @@ let llmBusyCount=0;
 let llmBusyTimer=null;
 let llmBusyTick=0;
 
+function _kickoffAudioPipeline(list){
+    if(!Array.isArray(list)||!list.length)return;
+    list.slice(0,8).forEach((u,idx)=>{
+        setTimeout(()=>{
+            try{
+                const npc=chars.find(c=>c.n===u.npc_id||c.a===u.npc_id);
+                const speaker=npc?npc.n:u.npc_id;
+                const emo=String(u.emotion||'neutral');
+                if(typeof prepareNpcSpeech==='function'){
+                    u._preparedAudioPromise=prepareNpcSpeech(u.text,emo,speaker,u.tts_url||'');
+                }else{
+                    prefetchNpcSpeech(u.text,emo,speaker);
+                }
+            }catch(e){}
+        },idx*35);
+    });
+}
+
 function buildChatHistoryPayload(){
     if(!Array.isArray(hist)||!hist.length)return [];
     return hist
@@ -72,21 +90,10 @@ function resetUtteranceBlackboard(list){
         if(item.tts_url){
             const npc=chars.find(c=>c.n===item.npc_id||c.a===item.npc_id);
             const speaker=npc?npc.n:item.npc_id;
-            seedNpcSpeechCache(item.text,detectEmotionLabel(item.text),speaker,item.tts_url);
+            seedNpcSpeechCache(item.text,String(item.emotion||'neutral'),speaker,item.tts_url);
         }
     }
-    if(utteranceBlackboard.length>0){
-        const first=utteranceBlackboard[0];
-        const n1=chars.find(c=>c.n===first.npc_id||c.a===first.npc_id);
-        const s1=n1?n1.n:first.npc_id;
-        prefetchNpcSpeech(first.text,detectEmotionLabel(first.text),s1);
-        if(utteranceBlackboard.length>1){
-            const second=utteranceBlackboard[1];
-            const n2=chars.find(c=>c.n===second.npc_id||c.a===second.npc_id);
-            const s2=n2?n2.n:second.npc_id;
-            prefetchNpcSpeech(second.text,detectEmotionLabel(second.text),s2);
-        }
-    }
+    _kickoffAudioPipeline(utteranceBlackboard);
 }
 
 async function start(){
@@ -189,6 +196,7 @@ console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal)
 _setLlmBusy(true,'时间暂停，众人思考中');
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal,chat_history:buildChatHistoryPayload(),scenario_id:selectedScenarioId,scene_name:scene,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),characters:chars})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
+    window.__lastChatResponseAt=performance.now();
     if(d.data.utterances){
         resetUtteranceBlackboard(d.data.utterances||[]);
         shouldAwaitUser=d.data.should_await_user!==false;
@@ -226,9 +234,9 @@ lastVoiceText='';
 }
 function addUser(t){hist.push({role:'user',speaker:'用户',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
 
-function addBot(t,sp,emo){return addBotStreaming(t,sp,emo)}
+function addBot(t,sp,emo,opts){return addBotStreaming(t,sp,emo,opts)}
 
-function addBotStreaming(t,sp,emo){
+function addBotStreaming(t,sp,emo,opts={}){
     hist.push({role:'assistant',speaker:sp||'',content:t});
     const c=$('mc2');
     const msgId='msg-'+Date.now();
@@ -245,10 +253,17 @@ function addBotStreaming(t,sp,emo){
         renderConversationState('idle');
     }
     
+    const speechEmotion=String(opts.emotion||'').trim()||detectEmotionLabel(t);
     if(typeof enqueueNPCSpeech==='function'){
-        enqueueNPCSpeech(t, detectEmotionLabel(t), speaker);
+        enqueueNPCSpeech(t, speechEmotion, speaker, {
+            preferredUrl:opts.ttsUrl||'',
+            preparedPromise:opts.preparedPromise||null
+        });
     }else{
-        speakNPC(t, detectEmotionLabel(t), speaker);
+        speakNPC(t, speechEmotion, speaker, {
+            preferredUrl:opts.ttsUrl||'',
+            preparedPromise:opts.preparedPromise||null
+        });
     }
     const mco=document.querySelector(`#${msgId} .mco`);
     let idx=0;
@@ -296,15 +311,33 @@ async function displayUtterances(){
         const next=utteranceBlackboard[0];
         const nextNpc=chars.find(c=>c.n===next.npc_id||c.a===next.npc_id);
         const nextSpeaker=nextNpc?nextNpc.n:next.npc_id;
-        prefetchNpcSpeech(next.text,detectEmotionLabel(next.text),nextSpeaker);
+        if(!next._preparedAudioPromise&&typeof prepareNpcSpeech==='function'){
+            next._preparedAudioPromise=prepareNpcSpeech(
+                next.text,
+                String(next.emotion||'neutral'),
+                nextSpeaker,
+                next.tts_url||''
+            );
+        }else{
+            prefetchNpcSpeech(next.text,String(next.emotion||'neutral'),nextSpeaker);
+        }
     }
     await waitForAudioTurn(speakerName, Number(utterance.delay_ms)||700);
     console.log(`[displayUtterances] wait_for_audio_done speaker=${speakerName} cost_ms=${Math.round(performance.now()-lineT0)} has_tts_url=${utterance?.tts_url?1:0}`);
     
-    await addBotStreaming(utterance.text,speakerName,detectEmotion(utterance.text));
+    await addBotStreaming(
+        utterance.text,
+        speakerName,
+        detectEmotion(utterance.text),
+        {
+            ttsUrl:utterance.tts_url||'',
+            emotion:utterance.emotion||'neutral',
+            preparedPromise:utterance._preparedAudioPromise||null
+        }
+    );
     console.log(`[displayUtterances] addBotStreaming_done speaker=${speakerName} cost_ms=${Math.round(performance.now()-lineT0)}`);
     
-    const delay=Math.max(300,Math.min(900,Number(utterance.delay_ms)||700));
+    const delay=80;
     setTimeout(displayUtterances,delay);
 }
 

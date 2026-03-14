@@ -613,6 +613,18 @@ async def _prewarm_runtime():
         print(f"[Warmup] get_engine failed: {e}")
     try:
         get_tts_service()
+        # Trigger one tiny remote synth to avoid first-turn TTS cold-start.
+        if _truthy_env("TTS_REMOTE_PREWARM_ENABLED", "1"):
+            tts = get_tts_service()
+            try:
+                _ = tts.synthesize(
+                    "准备好了",
+                    emotion="neutral",
+                    speaker_profile={"tts_role": "diana", "gender": "female", "age_group": "adult"},
+                )
+                print(f"[Warmup] tts_remote_prewarm_ms={int(getattr(tts, 'last_latency_ms', 0) or 0)}")
+            except Exception as tts_warm_err:
+                print(f"[Warmup] tts_remote_prewarm failed: {tts_warm_err}")
     except Exception as e:
         print(f"[Warmup] get_tts_service failed: {e}")
     print(f"[Warmup] startup prewarm done cost_ms={int((time.perf_counter()-t0)*1000)}")
@@ -1494,6 +1506,7 @@ async def send_msg(req: ChatReq):
 
     try:
         multimodal = req.multimodal or {}
+        llm_t0 = time.perf_counter()
         mm_result = None
         mm_latency_ms = 0
         if multimodal:
@@ -1519,6 +1532,18 @@ async def send_msg(req: ChatReq):
                     chars = (session.get("scenario") or {}).get("characters", []) if isinstance(session, dict) else []
                     payload["utterances"] = _prebuild_utterance_tts(payload.get("utterances") or [], chars or [])
                 _save_session_snapshot(eng, req.session_id)
+                utterances = payload.get("utterances") if isinstance(payload, dict) else []
+                utter_count = len(utterances) if isinstance(utterances, list) else 0
+                with_tts_url = 0
+                if isinstance(utterances, list):
+                    with_tts_url = sum(1 for u in utterances if isinstance(u, dict) and str(u.get("tts_url") or "").strip())
+                print(
+                    "[ChatSend] complete "
+                    f"sid={req.session_id} utterances={utter_count} with_tts_url={with_tts_url} "
+                    f"llm_total_ms={int((time.perf_counter() - llm_t0) * 1000)} "
+                    f"api_total_ms={int((time.perf_counter() - req_t0) * 1000)} "
+                    f"mm_ms={mm_latency_ms}"
+                )
                 if mm_result:
                     payload["multimodal_analysis"] = mm_result
                 return {
