@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .unified_agent_contracts import (
     NPCCharacter,
@@ -263,6 +264,16 @@ class UnifiedAgent:
             reason=data.get("reason", ""),
         )
 
+    def _debug_log_raw_response(self, stage: str, content: str, err: Exception = None) -> None:
+        try:
+            marker = f"[UnifiedAgent][{stage}]"
+            if err is not None:
+                logger.error("%s parse_error=%s", marker, err)
+            # User explicitly asked to print full return content for troubleshooting.
+            logger.error("%s raw_response_begin\n%s\n%s raw_response_end", marker, str(content or ""), marker)
+        except Exception:
+            pass
+
     def _extract_json_objects(self, text: str) -> List[str]:
         s = str(text or "")
         objs: List[str] = []
@@ -324,6 +335,90 @@ class UnifiedAgent:
             f"Invalid output:\n{bad_output}\n\n"
             f"Parser error:\n{parse_error}\n"
         )
+
+    def _response_json_schema(self) -> Dict[str, Any]:
+        return {
+            "name": "unified_agent_response",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "utterances": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "npc_id": {"type": "string", "minLength": 1},
+                                "text": {"type": "string", "minLength": 1},
+                                "delay_ms": {"type": "integer", "minimum": 0, "maximum": 5000},
+                            },
+                            "required": ["npc_id", "text", "delay_ms"],
+                        },
+                    },
+                    "should_await_user": {"type": "boolean"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["utterances", "should_await_user", "reason"],
+            },
+        }
+
+    def _generate_structured_json(
+        self,
+        prompt: str,
+        max_new_tokens: int = 420,
+        temperature: float = 0.25,
+        model_override: str = "",
+    ) -> str:
+        client = getattr(self.llm, "client", None)
+        model_name = str(model_override or getattr(self.llm, "model_name", "")).strip()
+        timeout = float(getattr(self.llm, "request_timeout", 30) or 30)
+        if not client or not model_name:
+            raise RuntimeError("Structured output unavailable: missing llm client/model.")
+
+        messages = [{"role": "user", "content": prompt}]
+        # Prefer json_schema (strict). If backend doesn't support it, fallback to json_object.
+        # Retry once with a larger token budget when response is cut by length.
+        token_budgets = [max_new_tokens, min(max_new_tokens * 2, 900)]
+        last_err = None
+        for budget in token_budgets:
+            try:
+                try:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        max_tokens=budget,
+                        temperature=temperature,
+                        top_p=0.9,
+                        timeout=timeout,
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": self._response_json_schema(),
+                        },
+                    )
+                except Exception:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        max_tokens=budget,
+                        temperature=temperature,
+                        top_p=0.9,
+                        timeout=timeout,
+                        response_format={"type": "json_object"},
+                    )
+                content = response.choices[0].message.content
+                if content is None or not str(content).strip():
+                    raise RuntimeError("Structured output returned empty content.")
+                finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "").lower()
+                if finish_reason == "length" and budget < token_budgets[-1]:
+                    continue
+                return str(content).strip()
+            except Exception as e:
+                last_err = e
+                continue
+        raise RuntimeError(f"Structured output failed after token budget retries: {last_err}")
 
     def _generate_fallback(
         self,
@@ -466,18 +561,46 @@ class UnifiedAgent:
             pressure_value=pressure_value or 5,
             drinking_capacity=drinking_capacity or 0,
         )
-        response = self.llm.generate(prompt, max_new_tokens=220, temperature=0.45)
+
+        # Path A: structured output first (best robustness).
         try:
-            result = self._parse_llm_response(response)
-        except Exception as parse_err:
-            regen_prompt = self._build_json_regen_prompt(prompt)
-            regenerated = self.llm.generate(regen_prompt, max_new_tokens=220, temperature=0.2)
+            stable_model = (
+                os.getenv("SILICONFLOW_STRUCTURED_MODEL")
+                or os.getenv("SILICONFLOW_STABLE_LLM_MODEL")
+                or "deepseek-ai/DeepSeek-V3.2"
+            ).strip()
+            response = self._generate_structured_json(
+                prompt,
+                max_new_tokens=420,
+                temperature=0.2,
+                model_override=stable_model,
+            )
             try:
-                result = self._parse_llm_response(regenerated)
-            except Exception as regen_err:
-                repair_prompt = self._build_json_repair_prompt(prompt, regenerated or response, str(regen_err))
-                repaired = self.llm.generate(repair_prompt, max_new_tokens=260, temperature=0.1)
-                result = self._parse_llm_response(repaired)
+                result = self._parse_llm_response(response)
+            except Exception as e:
+                self._debug_log_raw_response("structured", response, e)
+                raise
+        except Exception as structured_err:
+            logger.warning("UnifiedAgent structured output failed, fallback to text parsing: %s", structured_err)
+            # Path B/C/D: strict text generation + regeneration + repair.
+            response = self.llm.generate(prompt, max_new_tokens=360, temperature=0.45)
+            try:
+                result = self._parse_llm_response(response)
+            except Exception as parse_err:
+                self._debug_log_raw_response("text_primary", response, parse_err)
+                regen_prompt = self._build_json_regen_prompt(prompt)
+                regenerated = self.llm.generate(regen_prompt, max_new_tokens=360, temperature=0.2)
+                try:
+                    result = self._parse_llm_response(regenerated)
+                except Exception as regen_err:
+                    self._debug_log_raw_response("text_regen", regenerated, regen_err)
+                    repair_prompt = self._build_json_repair_prompt(prompt, regenerated or response, str(regen_err))
+                    repaired = self.llm.generate(repair_prompt, max_new_tokens=420, temperature=0.1)
+                    try:
+                        result = self._parse_llm_response(repaired)
+                    except Exception as repair_err:
+                        self._debug_log_raw_response("text_repair", repaired, repair_err)
+                        raise
         if not result.utterances:
             raise RuntimeError("UnifiedAgent returned empty utterances; fallback disabled.")
         self._assert_no_duplicate_utterances(result.utterances)

@@ -2,6 +2,55 @@
 
 let utteranceBlackboard=[];
 let utteranceSeq=1;
+let llmBusyCount=0;
+let llmBusyTimer=null;
+let llmBusyTick=0;
+
+function _ensureLlmBusyUi(){
+    if(document.getElementById('llmBusyStyle'))return;
+    const style=document.createElement('style');
+    style.id='llmBusyStyle';
+    style.textContent=`
+#llmBusyBar{position:fixed;left:0;right:0;top:0;height:3px;z-index:5000;display:none;background:rgba(37,99,235,.15);overflow:hidden}
+#llmBusyBar::after{content:'';display:block;width:35%;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);animation:llmBusySlide 1s linear infinite}
+@keyframes llmBusySlide{0%{transform:translateX(-120%)}100%{transform:translateX(320%)}}
+`;
+    document.head.appendChild(style);
+    const bar=document.createElement('div');
+    bar.id='llmBusyBar';
+    document.body.appendChild(bar);
+}
+
+function _setLlmBusy(active,label='模型生成中'){
+    _ensureLlmBusyUi();
+    llmBusyCount=Math.max(0,llmBusyCount+(active?1:-1));
+    const busy=llmBusyCount>0;
+    const bar=document.getElementById('llmBusyBar');
+    if(bar)bar.style.display=busy?'block':'none';
+
+    const input=$('ci2');
+    const sendBtn=document.querySelector('.sb');
+    const rescueBtn=document.querySelector('.rescue-fab');
+    if(sendBtn)sendBtn.disabled=busy;
+    if(rescueBtn)rescueBtn.disabled=busy;
+    if(input)input.readOnly=busy;
+
+    if(!busy){
+        if(llmBusyTimer){clearInterval(llmBusyTimer);llmBusyTimer=null;}
+        if(input)input.placeholder='输入消息...';
+        if(sendBtn)sendBtn.textContent='发送';
+        return;
+    }
+    if(llmBusyTimer)return;
+    llmBusyTick=0;
+    llmBusyTimer=setInterval(()=>{
+        llmBusyTick=(llmBusyTick+1)%4;
+        const dots='.'.repeat(llmBusyTick);
+        if(input)input.placeholder=`${label}${dots}`;
+        if(sendBtn)sendBtn.textContent=`生成中${dots}`;
+    },360);
+}
+window.__setLlmBusy=_setLlmBusy;
 
 function resetUtteranceBlackboard(list){
     utteranceBlackboard=[];
@@ -106,6 +155,7 @@ const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';stopNpcVoice(
 await unlockNpcAudio();
 const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
+_setLlmBusy(true,'AI思考中');
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
     if(d.data.utterances){
@@ -138,6 +188,7 @@ const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2))
         setVoiceEmotion(em);
     }
 }}catch(e){console.log('[Chat] 错误:', e)}
+finally{_setLlmBusy(false)}
 lastVoiceFeatures=null;
 lastVoiceText='';
 

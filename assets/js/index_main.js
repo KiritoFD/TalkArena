@@ -1111,7 +1111,38 @@ async function regenerateScene() {
     }
 }
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
-async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
+async function rescue(){
+    if(!sid)return;
+    try{
+        if(typeof window.__setLlmBusy==='function')window.__setLlmBusy(true,'救场建议生成中');
+        setCoachHint('救场建议生成中，请稍候...');
+        const r=await fetch('/api/chat/rescue',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({session_id:sid})
+        });
+        const d=await r.json();
+        if(d.success&&d.data&&d.data.suggestion){
+            $('ci2').value=d.data.suggestion;
+            setCoachHint('救场建议已生成，可直接发送或微调后发送。');
+        }else{
+            setCoachHint('救场建议生成失败，请重试。');
+        }
+    }catch(e){
+        setCoachHint('救场建议生成失败，请检查网络后重试。');
+    }finally{
+        if(typeof window.__setLlmBusy==='function')window.__setLlmBusy(false);
+    }
+}
+
+function _escapeHtml(v){
+    return String(v??'')
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+}
 
 function normalizeReportData(data){
     const d=(data&&typeof data==='object')?{...data}:{};
@@ -1140,8 +1171,13 @@ function normalizeReportData(data){
     const npcList=Array.isArray(d.npc_os_list)?d.npc_os_list:
         Array.isArray(d.npc_thoughts)?d.npc_thoughts:
         Array.isArray(d.npc_list)?d.npc_list:[];
+    let transcript=Array.isArray(d.transcript)?d.transcript:[];
+    if(!transcript.length&&typeof d.history_log==='string'&&d.history_log.trim()){
+        transcript=d.history_log.split('\n').map(s=>String(s||'').trim()).filter(Boolean);
+    }
     d.scores=scores;
     d.npc_os_list=npcList;
+    d.transcript=transcript;
     if(!d.summary)d.summary='暂无综合点评';
     if(!d.suggestion)d.suggestion='建议继续训练，逐步提升表达的结构与节奏。';
     return d;
@@ -1150,6 +1186,7 @@ function normalizeReportData(data){
 function buildReportHtml(data){
     const safeData=normalizeReportData(data||{});
     const npcList=Array.isArray(safeData.npc_os_list)?safeData.npc_os_list:[];
+    const transcript=Array.isArray(safeData.transcript)?safeData.transcript:[];
     const scores=(safeData.scores&&typeof safeData.scores==='object')?safeData.scores:{};
     const medalNames={
         '🥇':'社交达人',
@@ -1188,6 +1225,12 @@ function buildReportHtml(data){
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:20px;">
             <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">下一轮提升点</h3>
             <p style="margin:0;font-size:14px;line-height:1.8;color:#334155;white-space:pre-wrap;">${safeData.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
+        </div>
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:20px;">
+            <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">对话全程文本</h3>
+            <div style="max-height:320px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0;">
+                ${transcript.length?`<pre style="margin:0;white-space:pre-wrap;line-height:1.7;font-size:13px;color:#334155;">${_escapeHtml(transcript.map(x=>String(x)).join('\n'))}</pre>`:'<div style="font-size:13px;color:#64748b;">暂无对话文本</div>'}
+            </div>
         </div>
         <div style="display:flex;gap:10px;justify-content:flex-end;">
             <button class="view-btn" onclick="saveCurrentReportImage()">保存到本地</button>
@@ -1233,17 +1276,21 @@ function _reportImageDataUrl(data){
     const d=(data&&typeof data==='object')?data:{};
     const scores=(d.scores&&typeof d.scores==='object')?d.scores:{};
     const npcList=Array.isArray(d.npc_os_list)?d.npc_os_list:[];
+    const transcript=Array.isArray(d.transcript)?d.transcript:[];
+    const transcriptText=transcript.length?transcript.join('\n'):'暂无对话文本';
+    const estimatedTranscriptLines=Math.max(3,Math.ceil(transcriptText.length/40)+transcript.length);
     const canvas=document.createElement('canvas');
     canvas.width=1080;
-    canvas.height=1840;
+    canvas.height=Math.max(1840,1840 + (estimatedTranscriptLines-8)*24);
     const ctx=canvas.getContext('2d');
     ctx.fillStyle='#f8fafc';
     ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle='#ffffff';
     ctx.strokeStyle='#e2e8f0';
     ctx.lineWidth=2;
-    ctx.fillRect(40,40,1000,1760);
-    ctx.strokeRect(40,40,1000,1760);
+    const cardHeight=canvas.height-120;
+    ctx.fillRect(40,40,1000,cardHeight);
+    ctx.strokeRect(40,40,1000,cardHeight);
 
     ctx.fillStyle='#0f172a';
     ctx.font='bold 52px sans-serif';
@@ -1356,9 +1403,10 @@ function _reportImageDataUrl(data){
         const txt=npcList.map(n=>`${n.name||'NPC'}：${n.content||n.os||n.thought||'暂无反馈'}`).join('\n');
         block('NPC 内心 OS',txt);
     }
+    block('对话全程文本',transcriptText);
     ctx.fillStyle='#94a3b8';
     ctx.font='20px sans-serif';
-    ctx.fillText(`生成时间：${new Date().toLocaleString()}`,90,1720);
+    ctx.fillText(`生成时间：${new Date().toLocaleString()}`,90,canvas.height-70);
     return canvas.toDataURL('image/png');
 }
 
@@ -1647,14 +1695,18 @@ async function end(){
         sid=null;
     }catch(e){
         logClient('error','end_failed',{sid:activeSid,error:String(e)});
-        const fallback={
-            scene_name:'本轮会话',
-            summary:'总结生成失败，请稍后重试。',
-            suggestion:'可返回继续对话，或重新开始新会话。',
-            scores:{}
-        };
         _finishEndLoading();
-        renderEndReport(fallback,'fallback');
+        $('rc').innerHTML=`
+<div style="max-width:820px;margin:40px auto;background:#fff;padding:24px;border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,0.08)">
+  <h2 style="margin-top:0;color:#0f172a;">报告生成失败</h2>
+  <p style="color:#475569;line-height:1.7;">当前与模型服务连接不稳定，请重试生成报告。</p>
+  <div style="margin-top:12px;padding:10px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:12px;color:#64748b;white-space:pre-wrap;">${_escapeHtml(String(e||''))}</div>
+  <div style="margin-top:16px;display:flex;gap:10px;">
+    <button class="view-btn" onclick="end()">重试生成报告</button>
+    <button class="view-btn" onclick="goCfg()">返回配置页</button>
+  </div>
+</div>`;
+        show('p4');
     }finally{
         const endBtn=document.querySelector('.eb');
         if(endBtn&&sid)endBtn.disabled=false;

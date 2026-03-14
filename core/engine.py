@@ -404,7 +404,8 @@ class TalkArenaEngine:
         
         def _llm_generate_with_retry(prompt: str, max_new_tokens: int, temperature: float = 0.7) -> str:
             last_err = None
-            for i in range(3):
+            retry_delays = [1.0, 2.0, 3.0, 5.0, 8.0]
+            for i in range(len(retry_delays) + 1):
                 try:
                     out = self.llm.generate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
                     txt = str(out or "").strip()
@@ -413,8 +414,16 @@ class TalkArenaEngine:
                     return txt
                 except Exception as e:
                     last_err = e
-                    if i < 2:
-                        time.sleep(1.0 + i * 0.5)
+                    if i < len(retry_delays):
+                        # Rebuild client on each retry to avoid stale broken connections.
+                        try:
+                            if hasattr(self.llm, "client"):
+                                self.llm.client = None
+                            if hasattr(self.llm, "load"):
+                                self.llm.load()
+                        except Exception:
+                            pass
+                        time.sleep(retry_delays[i])
                         continue
             raise RuntimeError(f"report llm generate failed after retries: {last_err}")
 
@@ -428,12 +437,39 @@ class TalkArenaEngine:
 
         scene_name = session.get("scene_name", "未命名场景")
         npc_list = session.get("scenario", {}).get("characters", [])
-        history_log = "\n".join(
-            [
-                f"{c.get('name', 'NPC')}: {msg}"
-                for c, msg in session.get("chat_history", [])
-            ]
-        )
+        transcript_lines: List[str] = []
+        if isinstance(session.get("unified_history"), list) and session.get("unified_history"):
+            for t in session.get("unified_history", []):
+                if not isinstance(t, dict):
+                    continue
+                speaker = str(t.get("speaker") or ("用户" if t.get("is_user") else "NPC") or "NPC").strip()
+                text = str(t.get("text") or "").strip()
+                if text:
+                    transcript_lines.append(f"{speaker}：{text}")
+        elif isinstance(session.get("history"), list) and session.get("history"):
+            for t in session.get("history", []):
+                if not isinstance(t, dict):
+                    continue
+                user = str(t.get("user") or "").strip()
+                ai = str(t.get("ai") or "").strip()
+                speaker = str(t.get("speaker") or "NPC").strip()
+                if user:
+                    transcript_lines.append(f"用户：{user}")
+                if ai:
+                    transcript_lines.append(f"{speaker}：{ai}")
+        elif isinstance(session.get("chat_history"), list) and session.get("chat_history"):
+            for item in session.get("chat_history", []):
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    c, msg = item[0], item[1]
+                    speaker = "NPC"
+                    if isinstance(c, dict):
+                        speaker = str(c.get("name") or c.get("n") or "NPC")
+                    text = str(msg or "").strip()
+                    if text:
+                        transcript_lines.append(f"{speaker}：{text}")
+
+        history_log = "\n".join(transcript_lines) if transcript_lines else "（无有效对话记录）"
+        history_for_model = "\n".join(transcript_lines[-80:]) if transcript_lines else "（无有效对话记录）"
         turn_count = session.get("turn_count", 0)
         dominance = session.get("dominance", {})
         user_dominance = _to_score(dominance.get("user", 50))
@@ -454,7 +490,7 @@ class TalkArenaEngine:
         scores_prompt = get_report_scores_prompt(
             scene_name=scene_name,
             npc_list=json.dumps(npc_list, ensure_ascii=False),
-            history_log=history_log,
+            history_log=history_for_model,
         )
         scores_result = _llm_generate_with_retry(scores_prompt, max_new_tokens=220, temperature=0.4)
         scores_data = _extract_json_obj(scores_result)
@@ -477,7 +513,7 @@ class TalkArenaEngine:
         summary_prompt = get_report_summary_prompt(
             scene_name=scene_name,
             npc_list=json.dumps(npc_list, ensure_ascii=False),
-            history_log=history_log,
+            history_log=history_for_model,
             medal=self._get_medal_name(medal),
         )
         summary = _llm_generate_with_retry(summary_prompt, max_new_tokens=320, temperature=0.6)
@@ -488,7 +524,7 @@ class TalkArenaEngine:
         npc_prompt = get_report_npc_inner_voice_prompt(
             scene_name=scene_name,
             npc_list=json.dumps(npc_list, ensure_ascii=False),
-            history_log=history_log,
+            history_log=history_for_model,
             medal=self._get_medal_name(medal),
         )
         npc_result = _llm_generate_with_retry(npc_prompt, max_new_tokens=420, temperature=0.6)
@@ -520,6 +556,8 @@ class TalkArenaEngine:
                 "user": user_dominance,
                 "ai": ai_dominance,
             },
+            "transcript": transcript_lines,
+            "history_log": history_log,
         }
 
     def _get_medal_name(self, medal: str) -> str:

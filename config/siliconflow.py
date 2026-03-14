@@ -17,7 +17,7 @@ class SiliconFlowConfig:
     api_key_default: str = "sk-zowfpdzeiqchwkdomuljrzfdumsejnogqsjvpnpguwxyazsq"
     base_url_default: str = "https://api.siliconflow.cn/v1"
 
-    llm_model_default: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    llm_model_default: str = "deepseek-ai/DeepSeek-V3.2"
     stt_model_default: str = "FunAudioLLM/SenseVoiceSmall"
 
     # Prefer Chinese-focused TTS by default.
