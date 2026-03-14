@@ -5,8 +5,10 @@ Keep all SiliconFlow model and voice selections centralized here for easier main
 
 from __future__ import annotations
 
+import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Dict
 
 
@@ -20,15 +22,16 @@ class SiliconFlowConfig:
 
     # Prefer Chinese-focused TTS by default.
     tts_model_default: str = "fnlp/MOSS-TTSD-v0.5"
-    tts_voice_default: str = "female"
+    tts_voice_default: str = "fnlp/MOSS-TTSD-v0.5:diana"
+    tts_official_voices: Dict[str, list] = field(default_factory=dict)
 
     # Emotion-based fallback map.
     tts_emotion_voice_map: Dict[str, str] = field(
         default_factory=lambda: {
-            "happy": "female",
-            "sad": "female_elder",
-            "neutral": "female",
-            "angry": "male",
+            "happy": "fnlp/MOSS-TTSD-v0.5:anna",
+            "sad": "fnlp/MOSS-TTSD-v0.5:claire",
+            "neutral": "fnlp/MOSS-TTSD-v0.5:diana",
+            "angry": "fnlp/MOSS-TTSD-v0.5:alex",
         }
     )
 
@@ -36,19 +39,61 @@ class SiliconFlowConfig:
     # age_group in {child, youth, adult, elder}.
     tts_role_voice_map: Dict[str, str] = field(
         default_factory=lambda: {
-            "female:child": "female_youth",
-            "female:youth": "female_youth",
-            "female:adult": "female",
-            "female:elder": "female_elder",
-            "male:child": "male_youth",
-            "male:youth": "male_youth",
-            "male:adult": "male",
-            "male:elder": "male_elder",
+            "female:child": "fnlp/MOSS-TTSD-v0.5:anna",
+            "female:youth": "fnlp/MOSS-TTSD-v0.5:bella",
+            "female:adult": "fnlp/MOSS-TTSD-v0.5:diana",
+            "female:elder": "fnlp/MOSS-TTSD-v0.5:claire",
+            "male:child": "fnlp/MOSS-TTSD-v0.5:benjamin",
+            "male:youth": "fnlp/MOSS-TTSD-v0.5:david",
+            "male:adult": "fnlp/MOSS-TTSD-v0.5:alex",
+            "male:elder": "fnlp/MOSS-TTSD-v0.5:charles",
+        }
+    )
+    preset_role_voice_map: Dict[str, str] = field(
+        default_factory=lambda: {
+            "主持人": "fnlp/MOSS-TTSD-v0.5:diana",
+            "引导者": "fnlp/MOSS-TTSD-v0.5:diana",
+            "长辈": "fnlp/MOSS-TTSD-v0.5:charles",
+            "晚辈": "fnlp/MOSS-TTSD-v0.5:bella",
+            "同事": "fnlp/MOSS-TTSD-v0.5:alex",
+            "面试官": "fnlp/MOSS-TTSD-v0.5:charles",
+            "hr": "fnlp/MOSS-TTSD-v0.5:claire",
+            "竞争者": "fnlp/MOSS-TTSD-v0.5:david",
+            "正方辩手": "fnlp/MOSS-TTSD-v0.5:alex",
+            "反方辩手": "fnlp/MOSS-TTSD-v0.5:charles",
+            "甲方负责人": "fnlp/MOSS-TTSD-v0.5:charles",
+            "乙方商务": "fnlp/MOSS-TTSD-v0.5:diana",
+            "风险顾问": "fnlp/MOSS-TTSD-v0.5:benjamin",
         }
     )
 
 
-SILICONFLOW_CONFIG = SiliconFlowConfig()
+def _load_tts_json_overrides() -> Dict:
+    path = Path(__file__).with_name("siliconflow_tts_voices.json")
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+_BASE_CONFIG = SiliconFlowConfig()
+_TTS_JSON = _load_tts_json_overrides()
+
+if _TTS_JSON:
+    defaults = _TTS_JSON.get("tts_defaults") or {}
+    SILICONFLOW_CONFIG = replace(
+        _BASE_CONFIG,
+        tts_model_default=str(defaults.get("model") or _BASE_CONFIG.tts_model_default),
+        tts_voice_default=str(defaults.get("voice") or _BASE_CONFIG.tts_voice_default),
+        tts_official_voices=dict(_TTS_JSON.get("official_voices") or {}),
+        tts_emotion_voice_map=dict(_TTS_JSON.get("emotion_voice_map") or _BASE_CONFIG.tts_emotion_voice_map),
+        tts_role_voice_map=dict(_TTS_JSON.get("demographic_voice_map") or _BASE_CONFIG.tts_role_voice_map),
+        preset_role_voice_map=dict(_TTS_JSON.get("preset_role_voice_map") or _BASE_CONFIG.preset_role_voice_map),
+    )
+else:
+    SILICONFLOW_CONFIG = _BASE_CONFIG
 
 
 def siliconflow_api_key() -> str:

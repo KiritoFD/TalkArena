@@ -112,6 +112,27 @@ class SiliconFlowTTSService:
         if voice:
             return voice
         profile = speaker_profile or {}
+        profile_voice = str(
+            profile.get("tts_voice")
+            or profile.get("voice")
+            or profile.get("voice_id")
+            or ""
+        ).strip()
+        if profile_voice:
+            return profile_voice
+
+        role_text = " ".join(
+            [
+                str(profile.get("role") or ""),
+                str(profile.get("name") or ""),
+                str(profile.get("personality") or ""),
+                str(profile.get("background") or ""),
+            ]
+        ).strip().lower()
+        if role_text:
+            for role_key, role_voice in SILICONFLOW_CONFIG.preset_role_voice_map.items():
+                if str(role_key).strip().lower() in role_text and role_voice:
+                    return role_voice
         gender = normalize_gender(str(profile.get("gender") or profile.get("sex") or ""))
         age_group = str(profile.get("age_group") or "").strip().lower() or infer_age_group(profile.get("age"))
 
@@ -132,6 +153,9 @@ class SiliconFlowTTSService:
             role_voice = SILICONFLOW_CONFIG.tts_role_voice_map.get(f"{gender}:{age_group}")
             if role_voice:
                 return role_voice
+        # Keep role speech identity stable: when speaker info exists, do not switch voice by emotion.
+        if profile:
+            return self.default_voice
         return self._EMOTION_TO_VOICE.get((emotion or "neutral").lower(), self.default_voice)
 
     def synthesize(self, text: str, emotion: str = "neutral", voice: str = None, speaker_profile: Optional[Dict] = None) -> Optional[bytes]:
@@ -706,6 +730,21 @@ async def tts(req: TTSReq):
         return {"success": True, "data": {"url": f"/audio/{filename}"}}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/tts/voices")
+async def tts_voices():
+    return {
+        "success": True,
+        "data": {
+            "default_model": SILICONFLOW_CONFIG.tts_model_default,
+            "default_voice": SILICONFLOW_CONFIG.tts_voice_default,
+            "official_voices": SILICONFLOW_CONFIG.tts_official_voices,
+            "preset_role_voice_map": SILICONFLOW_CONFIG.preset_role_voice_map,
+            "demographic_voice_map": SILICONFLOW_CONFIG.tts_role_voice_map,
+            "emotion_voice_map": SILICONFLOW_CONFIG.tts_emotion_voice_map,
+        },
+    }
 
 
 @app.get("/api/knowledge/search")

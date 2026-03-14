@@ -491,7 +491,7 @@ select:focus{outline:none;border-color:#667eea}
 </div>
 </div>
 <div class="hr">
-<button class="voice-toggle" id="npcVoiceToggle" onclick="toggleNpcVoice()">NPC语音: 关</button>
+<button class="voice-toggle" id="npcVoiceToggle" onclick="toggleNpcVoice()">NPC语音: 开</button>
 <button class="eb" onclick="end()">结束</button>
 </div>
 </div>
@@ -921,7 +921,7 @@ function mapAICharacter(c){
     return ensureMemberVisuals(member);
 }
 
-let npcVoiceEnabled=false;
+let npcVoiceEnabled=true;
 let npcAudioQueue=[];
 let npcAudioPlaying=false;
 let npcAudio=null;
@@ -972,9 +972,12 @@ async function speakNPC(text,emotion,speaker){
             speaker_profile:speakerProfile?{
                 name:speakerProfile.n||speakerProfile.name||'',
                 role:speakerProfile.r||speakerProfile.role||'',
+                personality:speakerProfile.p||speakerProfile.personality||'',
+                background:speakerProfile.b||speakerProfile.background||'',
                 gender:speakerProfile.gender||speakerProfile.sex||'',
                 age:speakerProfile.age||null,
-                age_group:speakerProfile.ageGroup||speakerProfile.age_group||''
+                age_group:speakerProfile.ageGroup||speakerProfile.age_group||'',
+                tts_voice:speakerProfile.tts_voice||speakerProfile.voice||''
             }:null
         })});
         const d=await r.json();
