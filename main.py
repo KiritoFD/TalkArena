@@ -486,7 +486,12 @@ def _load_scene_preset_prompts() -> Dict[str, Dict[str, str]]:
     }
     try:
         if SCENE_PRESET_PROMPTS_PATH.exists():
-            data = json.loads(SCENE_PRESET_PROMPTS_PATH.read_text(encoding="utf-8"))
+            raw = ""
+            try:
+                raw = SCENE_PRESET_PROMPTS_PATH.read_text(encoding="utf-8-sig")
+            except Exception:
+                raw = SCENE_PRESET_PROMPTS_PATH.read_text(encoding="utf-8")
+            data = json.loads(raw)
             if isinstance(data, dict):
                 normalized: Dict[str, Dict[str, str]] = {}
                 for scene_id, scene_map in data.items():
