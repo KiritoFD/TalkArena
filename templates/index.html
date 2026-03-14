@@ -925,6 +925,29 @@ let npcVoiceEnabled=true;
 let npcAudioQueue=[];
 let npcAudioPlaying=false;
 let npcAudio=null;
+let npcAudioUnlocked=false;
+let npcAudioContext=null;
+async function unlockNpcAudio(){
+    if(npcAudioUnlocked)return true;
+    try{
+        const AC=window.AudioContext||window.webkitAudioContext;
+        if(AC){
+            if(!npcAudioContext)npcAudioContext=new AC();
+            if(npcAudioContext.state==='suspended')await npcAudioContext.resume();
+        }
+        // Tiny silent wav to satisfy autoplay policy under user gesture.
+        const probe=new Audio('data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=');
+        probe.muted=true;
+        await probe.play();
+        probe.pause();
+        probe.currentTime=0;
+        npcAudioUnlocked=true;
+        return true;
+    }catch(e){
+        console.warn('[TTS] audio unlock blocked:',e);
+        return false;
+    }
+}
 function updateNpcVoiceButton(){
     const btn=$('npcVoiceToggle');
     if(!btn)return;
@@ -942,6 +965,7 @@ function stopNpcVoice(){
 function toggleNpcVoice(){
     npcVoiceEnabled=!npcVoiceEnabled;
     if(!npcVoiceEnabled)stopNpcVoice();
+    else unlockNpcAudio();
     updateNpcVoiceButton();
 }
 function queueNpcAudio(url){
@@ -957,7 +981,11 @@ function playNextNpcAudio(){
     npcAudio=new Audio(url);
     npcAudio.onended=()=>{npcAudioPlaying=false;playNextNpcAudio()};
     npcAudio.onerror=()=>{npcAudioPlaying=false;playNextNpcAudio()};
-    npcAudio.play().catch(()=>{npcAudioPlaying=false;playNextNpcAudio()});
+    npcAudio.play().catch((e)=>{
+        console.warn('[TTS] play blocked/failed:',e);
+        npcAudioPlaying=false;
+        playNextNpcAudio();
+    });
 }
 async function speakNPC(text,emotion,speaker){
     if(!npcVoiceEnabled)return;
@@ -983,8 +1011,12 @@ async function speakNPC(text,emotion,speaker){
         const d=await r.json();
         if(d.success&&d.data&&d.data.url){
             queueNpcAudio(d.data.url);
+        }else{
+            console.warn('[TTS] API failed:',d);
         }
-    }catch(e){}
+    }catch(e){
+        console.warn('[TTS] request failed:',e);
+    }
 }
 
 function setDrinkingCapacity(score){
@@ -1778,7 +1810,13 @@ if(d.data.is_unified_agent){
         $('interruptBtn').style.display='none';
     }
 }else{
-    if(d.data.opening)addBot(d.data.opening,null,detectEmotion(d.data.opening))
+    if(d.data.opening_utterances&&d.data.opening_utterances.length>0){
+        pendingUtterances=d.data.opening_utterances||[];
+        shouldAwaitUser=true;
+        displayUtterances();
+    }else if(d.data.opening){
+        addBot(d.data.opening,d.data.opening_speaker||null,detectEmotion(d.data.opening));
+    }
 }
 }catch(e){alert(e)}
 }
@@ -1808,6 +1846,7 @@ function setCoachHint(text){
 }
 async function send(){
 const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';stopNpcVoice();renderConversationState('user_speaking');addUser(t);
+await unlockNpcAudio();
 const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});

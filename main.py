@@ -406,6 +406,71 @@ class TTSReq(BaseModel):
     speaker_profile: Optional[Dict] = None
 
 
+ROLE_OPENING_TEMPLATES: Dict[str, str] = {
+    "主持人": "各位先入座，我们今天按这个话题来，先轻松聊两句。",
+    "引导者": "我们先热个场，你先说说最近最在意的一件事。",
+    "主陪": "来，先走一个，咱们边吃边聊，别拘着。",
+    "长辈": "先别紧张，按你的节奏说，咱听你怎么想。",
+    "大舅": "来，先碰一个，你这段时间的打算给大家交个底。",
+    "大妗子": "你慢慢说，不急，把细节讲明白就行。",
+    "表哥": "我先打个样，咱今天主打一个实话实说。",
+    "面试官": "我们直接开始，请你先做一个简短自我介绍。",
+    "hr": "先放轻松，我们主要看你的思路和沟通方式。",
+    "竞争者": "我先抛个观点，等会儿也想听听你的方案。",
+    "正方辩手": "我先立论，我们从核心定义和边界开始。",
+    "反方辩手": "我先回应一点，这个前提我认为并不成立。",
+    "同事": "我先补充个现场情况，方便我们对齐背景。",
+    "甲方负责人": "我们先对齐目标，再看执行和风险怎么控。",
+    "乙方商务": "我们先给出可落地方案，再谈排期与资源。",
+    "风险顾问": "我先提示风险点，后面我们逐条做取舍。",
+}
+
+
+def _character_name(char: Dict) -> str:
+    return str(char.get("name") or char.get("n") or "").strip()
+
+
+def _character_role(char: Dict) -> str:
+    return str(char.get("role") or char.get("r") or "").strip()
+
+
+def _build_preset_opening_line(char: Dict) -> str:
+    name = _character_name(char)
+    role = _character_role(char)
+    name_l = name.lower()
+    role_l = role.lower()
+    for key, text in ROLE_OPENING_TEMPLATES.items():
+        key_l = key.lower()
+        if key_l and key_l in name_l:
+            return text
+    for key, text in ROLE_OPENING_TEMPLATES.items():
+        key_l = key.lower()
+        if key_l and key_l in role_l:
+            return text
+    if role:
+        return f"我是{name or role}，我先开个头：我们先把重点摆清楚再往下聊。"
+    if name:
+        return f"我是{name}，我先说一句：先把真实情况讲明白，后面才好推进。"
+    return "我们开始吧，先把当下最关键的问题摆到桌面上。"
+
+
+def _build_preset_opening_utterances(characters: List[Dict]) -> List[Dict]:
+    utterances: List[Dict] = []
+    for i, c in enumerate(characters or []):
+        speaker = _character_name(c)
+        if not speaker:
+            continue
+        utterances.append(
+            {
+                "npc_id": speaker,
+                "text": _build_preset_opening_line(c),
+                "emotion": "neutral",
+                "delay_ms": 320 + i * 120,
+            }
+        )
+    return utterances
+
+
 @app.get("/favicon.ico")
 async def favicon():
     return Response(
@@ -459,6 +524,17 @@ async def start_session(req: SessionReq):
             )
 
         if hasattr(eng, 'use_unified_agent') and eng.use_unified_agent:
+            preset_utterances = _build_preset_opening_utterances(req.characters or [])
+            if preset_utterances:
+                return {
+                    "success": True,
+                    "data": {
+                        "session_id": session_id,
+                        "is_unified_agent": True,
+                        "utterances": preset_utterances,
+                        "should_await_user": True,
+                    },
+                }
             for result in eng.process_turn(session_id, "", is_interrupt=False):
                 if result.stage == "complete":
                     return {
@@ -472,22 +548,28 @@ async def start_session(req: SessionReq):
                     }
         else:
             session = eng.sessions[session_id]
-            opening = eng.multi_agent.agents_list[0].think(
-                {
-                    "scenario_id": req.scenario_id,
-                    "characters": req.characters or session["scenario"].get("characters", []),
-                    "user_input": "",
-                    "turn_count": 0,
-                    "dominance": {"user": 50, "ai": 50},
-                    "scene_description": req.scene_description,
-                    "user_info": req.user_info,
-                }
+            opening_utterances = _build_preset_opening_utterances(
+                req.characters or session["scenario"].get("characters", [])
             )
+            opening = None
+            if not opening_utterances:
+                opening = eng.multi_agent.agents_list[0].think(
+                    {
+                        "scenario_id": req.scenario_id,
+                        "characters": req.characters or session["scenario"].get("characters", []),
+                        "user_input": "",
+                        "turn_count": 0,
+                        "dominance": {"user": 50, "ai": 50},
+                        "scene_description": req.scene_description,
+                        "user_info": req.user_info,
+                    }
+                )
 
             return {
                 "success": True,
                 "data": {
                     "session_id": session_id,
+                    "opening_utterances": opening_utterances,
                     "opening": opening.content if opening else "",
                     "opening_speaker": opening.metadata.get("speaker") if opening else "",
                     "user_dominance": 50,
