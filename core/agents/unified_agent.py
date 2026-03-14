@@ -19,6 +19,29 @@ logger = logging.getLogger("UnifiedAgent")
 
 
 class UnifiedAgent:
+    SCENE_FALLBACK_UTTERANCES = {
+        "shandong_dinner": [
+            "咱先不急，先把最要紧的一点摆在桌上。",
+            "先吃口菜缓一下，你把真实顾虑直说。",
+            "礼数先到位，后面我们一条条把事说透。",
+        ],
+        "business_dinner": [
+            "这个方向可以，我先把目标和时间点对齐。",
+            "先把边界说清，再谈资源和执行节奏。",
+            "我建议先锁定结果口径，再拆分落地步骤。",
+        ],
+        "interview": [
+            "我先给结论，再补一个可量化案例。",
+            "这个问题我分三点答，先说最关键的一点。",
+            "我先说明行动和结果，再补复盘反思。",
+        ],
+        "debate": [
+            "我先收敛定义，再给证据链。",
+            "先确认前提成立，再讨论结论强度。",
+            "我们先围绕可验证事实，不做情绪化扩展。",
+        ],
+    }
+
     SCENES = {
         "shandong_dinner": {
             "name": "山东家庭饭桌",
@@ -278,18 +301,10 @@ class UnifiedAgent:
             used_chars.append(speaker.name)
             self.last_spoken[speaker.name] = time.time()
             
-            fallback_texts = [
-                "来，咱继续聊。",
-                "你觉得呢？",
-                "这个事有意思。",
-                "接着说接着说。",
-                "有道理！",
-                "那咱接着往下说。",
-                "来来来，继续继续。",
-                "这个话题挺有意思。",
-            ]
-            
-            text = random.choice(fallback_texts)
+            scene_fallbacks = self.SCENE_FALLBACK_UTTERANCES.get(
+                scenario_id, self.SCENE_FALLBACK_UTTERANCES["shandong_dinner"]
+            )
+            text = random.choice(scene_fallbacks)
             
             utterances.append(NPCUtterance(
                 npc_id=speaker.name,

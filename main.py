@@ -1,4 +1,4 @@
-"""
+﻿"""
 TalkArena FastAPI 服务端
 整合 Multi-Agent、RAG、决策引擎、防幻觉机制
 """
@@ -9,7 +9,10 @@ import logging
 import importlib.util
 import tempfile
 import time
+import hashlib
+import json
 from pathlib import Path
+from collections import OrderedDict
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -49,6 +52,9 @@ tts_service = None
 local_stt_service = None
 local_tts_service = None
 AUDIO_OUTPUT_DIR = Path(tempfile.gettempdir()) / "talkarena_audio"
+TTS_FIXED_CACHE_MAX_ITEMS = int(os.getenv("TTS_FIXED_CACHE_MAX_ITEMS", "256"))
+TTS_FIXED_AUDIO_CACHE: "OrderedDict[str, str]" = OrderedDict()
+SCENE_PRESET_PROMPTS_PATH = Path(__file__).parent / "config" / "scene_preset_prompts.json"
 
 def _truthy_env(name: str, default: str = "1") -> bool:
     return (os.getenv(name, default) or default).strip().lower() not in {"0", "false", "no", "off"}
@@ -80,15 +86,18 @@ class SiliconFlowSTTService:
         self.base_url = _siliconflow_base_url()
         self.model = os.getenv("SILICONFLOW_STT_MODEL", SILICONFLOW_CONFIG.stt_model_default).strip()
         self.timeout = float(os.getenv("SILICONFLOW_STT_TIMEOUT", "60"))
+        self.last_latency_ms = 0
 
     def transcribe(self, audio_bytes: bytes, filename: str = "speech.wav") -> Dict:
         if not audio_bytes:
             return {"text": "", "voice_features": {}}
+        t0 = time.perf_counter()
         url = f"{self.base_url}/audio/transcriptions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         files = {"file": (filename, audio_bytes, "audio/wav")}
         data = {"model": self.model}
         resp = requests.post(url, headers=headers, files=files, data=data, timeout=self.timeout)
+        self.last_latency_ms = int((time.perf_counter() - t0) * 1000)
         if resp.status_code >= 400:
             raise RuntimeError(f"SiliconFlow STT failed: HTTP {resp.status_code} {resp.text[:240]}")
         payload = resp.json()
@@ -107,6 +116,16 @@ class SiliconFlowTTSService:
         self.default_voice = os.getenv("SILICONFLOW_TTS_VOICE", SILICONFLOW_CONFIG.tts_voice_default).strip()
         self.timeout = float(os.getenv("SILICONFLOW_TTS_TIMEOUT", "60"))
         self.response_format = (os.getenv("SILICONFLOW_TTS_RESPONSE_FORMAT", "wav") or "wav").strip().lower()
+        self.last_latency_ms = 0
+
+    def _stable_voice_pick(self, seed_text: str) -> str:
+        voices = SILICONFLOW_CONFIG.tts_official_voices.get(self.model) or []
+        if not voices:
+            return self.default_voice
+        seed = (seed_text or "default").strip().lower()
+        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+        idx = int(digest[:8], 16) % len(voices)
+        return str(voices[idx]).strip() or self.default_voice
 
     def _resolve_voice(self, emotion: str = "neutral", voice: str = None, speaker_profile: Optional[Dict] = None) -> str:
         if voice:
@@ -121,8 +140,26 @@ class SiliconFlowTTSService:
         if profile_voice:
             return profile_voice
 
+        tts_role = str(
+            profile.get("tts_role")
+            or profile.get("ttsRole")
+            or profile.get("tts角色")
+            or ""
+        ).strip()
+        if not tts_role and profile:
+            try:
+                tts_role = _infer_tts_role_for_character(profile)
+            except Exception:
+                tts_role = ""
+        if tts_role:
+            alias_voice = _voice_from_tts_role_alias(tts_role, self.model)
+            if alias_voice:
+                return alias_voice
+
         role_text = " ".join(
             [
+                tts_role,
+                str(profile.get("identity") or profile.get("identity_tag") or ""),
                 str(profile.get("role") or ""),
                 str(profile.get("name") or ""),
                 str(profile.get("personality") or ""),
@@ -153,9 +190,16 @@ class SiliconFlowTTSService:
             role_voice = SILICONFLOW_CONFIG.tts_role_voice_map.get(f"{gender}:{age_group}")
             if role_voice:
                 return role_voice
-        # Keep role speech identity stable: when speaker info exists, do not switch voice by emotion.
+        # Keep role speech identity stable and distinct even when mapping misses.
         if profile:
-            return self.default_voice
+            stable_seed = " ".join(
+                [
+                    tts_role,
+                    str(profile.get("name") or ""),
+                    str(profile.get("role") or ""),
+                ]
+            ).strip()
+            return self._stable_voice_pick(stable_seed or "npc")
         return self._EMOTION_TO_VOICE.get((emotion or "neutral").lower(), self.default_voice)
 
     def synthesize(self, text: str, emotion: str = "neutral", voice: str = None, speaker_profile: Optional[Dict] = None) -> Optional[bytes]:
@@ -163,6 +207,7 @@ class SiliconFlowTTSService:
         if not content:
             return None
         chosen_voice = self._resolve_voice(emotion=emotion, voice=voice, speaker_profile=speaker_profile)
+        t0 = time.perf_counter()
         url = f"{self.base_url}/audio/speech"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -176,6 +221,7 @@ class SiliconFlowTTSService:
         if chosen_voice:
             payload["voice"] = chosen_voice
         resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+        self.last_latency_ms = int((time.perf_counter() - t0) * 1000)
         if resp.status_code >= 400:
             raise RuntimeError(f"SiliconFlow TTS failed: HTTP {resp.status_code} {resp.text[:240]}")
         return resp.content if resp.content else None
@@ -406,26 +452,56 @@ class TTSReq(BaseModel):
     speaker_profile: Optional[Dict] = None
 
 
-ROLE_OPENING_TEMPLATES: Dict[str, str] = {
-    "主持人": "各位先入座，我们今天按这个话题来，先轻松聊两句。",
-    "引导者": "我们先热个场，你先说说最近最在意的一件事。",
-    "主陪": "来，先走一个，咱们边吃边聊，别拘着。",
-    "长辈": "先别紧张，按你的节奏说，咱听你怎么想。",
-    "大舅": "来，先碰一个，你这段时间的打算给大家交个底。",
-    "大妗子": "你慢慢说，不急，把细节讲明白就行。",
-    "表哥": "我先打个样，咱今天主打一个实话实说。",
-    "面试官": "我们直接开始，请你先做一个简短自我介绍。",
-    "hr": "先放轻松，我们主要看你的思路和沟通方式。",
-    "竞争者": "我先抛个观点，等会儿也想听听你的方案。",
-    "正方辩手": "我先立论，我们从核心定义和边界开始。",
-    "反方辩手": "我先回应一点，这个前提我认为并不成立。",
-    "同事": "我先补充个现场情况，方便我们对齐背景。",
-    "甲方负责人": "我们先对齐目标，再看执行和风险怎么控。",
-    "乙方商务": "我们先给出可落地方案，再谈排期与资源。",
-    "风险顾问": "我先提示风险点，后面我们逐条做取舍。",
-}
+def _load_scene_preset_prompts() -> Dict[str, Dict[str, str]]:
+    default_map: Dict[str, Dict[str, str]] = {
+        "shandong_dinner": {
+            "主持人": "各位先入座，先碰个杯，咱们按礼数慢慢聊。",
+            "主陪": "先走一个，咱今天讲究气氛，但话也要讲明白。",
+            "长辈": "别急，先把你的想法说完整，礼数和分寸都照顾到。",
+            "大舅": "来，先碰一下，你这阵子的打算给大家交个底。",
+            "大妗子": "你慢慢说，把细节落到实处，大家好帮你拿主意。",
+            "表哥": "我先热个场，咱们实话实说，别把话题聊散了。",
+        },
+        "business_dinner": {
+            "主持人": "先对齐目标，再聊合作边界和落地节奏。",
+            "甲方负责人": "我们先看结果目标，资源和时间窗口后面细谈。",
+            "乙方商务": "我先给可落地方案，再讲成本与排期。",
+            "风险顾问": "我先把风险点摆出来，避免后面返工。",
+        },
+        "interview": {
+            "面试官": "我们直接进入问题，请你先做一分钟自我介绍。",
+            "hr": "先别紧张，回答尽量结论先行、结构清晰。",
+            "竞争者": "我先给一个思路框架，后面欢迎你补充反驳。",
+        },
+        "debate": {
+            "主持人": "先明确议题定义，再进入立论和反驳环节。",
+            "正方辩手": "我先立论，核心观点与证据链如下。",
+            "反方辩手": "我先指出前提漏洞，再给反证。",
+        },
+        "_default": {
+            "主持人": "我们开始吧，先把关键问题摆到桌面上。",
+            "引导者": "先热个场，你先说最核心的一点。",
+            "同事": "我先补充背景，方便大家对齐。",
+        },
+    }
+    try:
+        if SCENE_PRESET_PROMPTS_PATH.exists():
+            data = json.loads(SCENE_PRESET_PROMPTS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                normalized: Dict[str, Dict[str, str]] = {}
+                for scene_id, scene_map in data.items():
+                    if isinstance(scene_map, dict):
+                        normalized[str(scene_id)] = {
+                            str(k): str(v) for k, v in scene_map.items() if str(k).strip() and str(v).strip()
+                        }
+                if normalized:
+                    return normalized
+    except Exception as e:
+        print(f"[PresetPrompts] load failed, fallback builtin: {e}")
+    return default_map
 
 
+SCENE_ROLE_OPENING_TEMPLATES: Dict[str, Dict[str, str]] = _load_scene_preset_prompts()
 def _character_name(char: Dict) -> str:
     return str(char.get("name") or char.get("n") or "").strip()
 
@@ -434,27 +510,171 @@ def _character_role(char: Dict) -> str:
     return str(char.get("role") or char.get("r") or "").strip()
 
 
-def _build_preset_opening_line(char: Dict) -> str:
+def _infer_identity_tag(char: Dict) -> str:
+    explicit = str(char.get("identity") or char.get("identity_tag") or "").strip().lower()
+    if explicit:
+        return explicit
+    raw = " ".join(
+        [
+            _character_name(char),
+            _character_role(char),
+            str(char.get("personality") or char.get("p") or ""),
+            str(char.get("background") or char.get("b") or ""),
+        ]
+    ).lower()
+    if any(k in raw for k in ["主陪", "长辈", "领导", "负责人", "面试官", "主持人", "总"]):
+        return "senior"
+    if any(k in raw for k in ["顾问", "风控", "法务", "评审", "点评"]):
+        return "advisor"
+    if any(k in raw for k in ["商务", "销售", "合作", "客户", "甲方", "乙方"]):
+        return "business"
+    if any(k in raw for k in ["竞争者", "晚辈", "新人", "学生", "表哥", "表姐", "表弟", "表妹"]):
+        return "junior"
+    if any(k in raw for k in ["辩手", "技术", "工程", "产品"]):
+        return "specialist"
+    return "neutral"
+
+
+def _moss_voice_aliases() -> List[str]:
+    return ["alex", "anna", "bella", "benjamin", "charles", "claire", "david", "diana"]
+
+
+def _normalize_tts_role_alias(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if ":" in raw:
+        raw = raw.split(":")[-1]
+    raw_l = raw.lower()
+    return raw_l if raw_l in _moss_voice_aliases() else ""
+
+
+def _infer_gender_age(char: Dict) -> Dict[str, str]:
+    gender = normalize_gender(str(char.get("gender") or char.get("sex") or ""))
+    age_group = str(char.get("age_group") or char.get("ageGroup") or "").strip().lower() or infer_age_group(char.get("age"))
+    if gender and age_group:
+        return {"gender": gender, "age_group": age_group}
+    hint_text = " ".join(
+        [
+            _character_name(char),
+            _character_role(char),
+            str(char.get("personality") or char.get("p") or ""),
+            str(char.get("background") or char.get("b") or ""),
+        ]
+    ).strip()
+    inferred = infer_demographics_from_text(hint_text)
+    return {
+        "gender": gender or inferred.get("gender", ""),
+        "age_group": age_group or inferred.get("age_group", "adult"),
+    }
+
+
+def _pick_tts_role_by_profile(gender: str, age_group: str, identity: str) -> str:
+    g = (gender or "").strip().lower()
+    a = (age_group or "").strip().lower()
+    i = (identity or "").strip().lower()
+
+    # 基线：性别 -> 年龄
+    if g == "male":
+        if a == "child":
+            base = "benjamin"
+        elif a == "youth":
+            base = "david"
+        elif a == "elder":
+            base = "charles"
+        else:
+            base = "alex"
+    elif g == "female":
+        if a == "child":
+            base = "anna"
+        elif a == "youth":
+            base = "bella"
+        elif a == "elder":
+            base = "claire"
+        else:
+            base = "diana"
+    else:
+        base = "diana"
+
+    # 第三层：身份微调
+    identity_override = {
+        "senior": "charles" if g == "male" else "claire",
+        "advisor": "benjamin" if g == "male" else "claire",
+        "business": "alex" if g == "male" else "diana",
+        "junior": "david" if g == "male" else "bella",
+        "specialist": "alex" if g == "male" else "anna",
+    }
+    return identity_override.get(i, base)
+
+
+def _infer_tts_role_for_character(char: Dict) -> str:
+    explicit = _normalize_tts_role_alias(
+        str(char.get("tts_role") or char.get("ttsRole") or char.get("tts角色") or "")
+    )
+    if explicit:
+        return explicit
+    ga = _infer_gender_age(char)
+    identity = _infer_identity_tag(char)
+    return _pick_tts_role_by_profile(ga.get("gender", ""), ga.get("age_group", ""), identity)
+
+
+def _voice_from_tts_role_alias(tts_role: str, model: str = "") -> str:
+    alias = _normalize_tts_role_alias(tts_role)
+    if not alias:
+        return ""
+    m = str(model or SILICONFLOW_CONFIG.tts_model_default).strip()
+    return f"{m}:{alias}"
+
+
+def _normalize_characters_tts_fields(characters: List[Dict]) -> List[Dict]:
+    normalized: List[Dict] = []
+    for c in (characters or []):
+        if not isinstance(c, dict):
+            continue
+        item = dict(c)
+        ga = _infer_gender_age(item)
+        if ga.get("gender") and not item.get("gender"):
+            item["gender"] = ga.get("gender")
+        if ga.get("age_group") and not item.get("age_group"):
+            item["age_group"] = ga.get("age_group")
+        if not item.get("identity"):
+            item["identity"] = _infer_identity_tag(item)
+        tts_role = _infer_tts_role_for_character(item)
+        item["tts_role"] = tts_role
+        item["tts角色"] = tts_role
+        voice = str(item.get("tts_voice") or "").strip() or _voice_from_tts_role_alias(tts_role, SILICONFLOW_CONFIG.tts_model_default)
+        if not voice and ga.get("gender") and ga.get("age_group"):
+            voice = str(SILICONFLOW_CONFIG.tts_role_voice_map.get(f"{ga.get('gender')}:{ga.get('age_group')}") or "").strip()
+        item["tts_voice"] = voice
+        normalized.append(item)
+    return normalized
+
+
+def _build_preset_opening_line(char: Dict, scenario_id: str = "") -> str:
     name = _character_name(char)
     role = _character_role(char)
     name_l = name.lower()
     role_l = role.lower()
-    for key, text in ROLE_OPENING_TEMPLATES.items():
+    scene_templates = SCENE_ROLE_OPENING_TEMPLATES.get(scenario_id, {})
+    merged_templates = {**SCENE_ROLE_OPENING_TEMPLATES.get("_default", {}), **scene_templates}
+
+    for key, text in merged_templates.items():
         key_l = key.lower()
         if key_l and key_l in name_l:
             return text
-    for key, text in ROLE_OPENING_TEMPLATES.items():
+
+    for key, text in merged_templates.items():
         key_l = key.lower()
         if key_l and key_l in role_l:
             return text
+
     if role:
         return f"我是{name or role}，我先开个头：我们先把重点摆清楚再往下聊。"
     if name:
         return f"我是{name}，我先说一句：先把真实情况讲明白，后面才好推进。"
     return "我们开始吧，先把当下最关键的问题摆到桌面上。"
 
-
-def _build_preset_opening_utterances(characters: List[Dict]) -> List[Dict]:
+def _build_preset_opening_utterances(characters: List[Dict], scenario_id: str = "") -> List[Dict]:
     utterances: List[Dict] = []
     for i, c in enumerate(characters or []):
         speaker = _character_name(c)
@@ -463,11 +683,112 @@ def _build_preset_opening_utterances(characters: List[Dict]) -> List[Dict]:
         utterances.append(
             {
                 "npc_id": speaker,
-                "text": _build_preset_opening_line(c),
+                "text": _build_preset_opening_line(c, scenario_id=scenario_id),
                 "emotion": "neutral",
                 "delay_ms": 320 + i * 120,
             }
         )
+    return utterances
+
+
+def _is_fixed_tts_phrase(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    tn = "".join(t.split())
+    for scene_map in SCENE_ROLE_OPENING_TEMPLATES.values():
+        for v in scene_map.values():
+            if tn == "".join(str(v).split()):
+                return True
+    return False
+
+
+def _tts_cache_key(req: TTSReq, service) -> str:
+    payload = {
+        "model": getattr(service, "model", ""),
+        "format": getattr(service, "response_format", "wav"),
+        "text": (req.text or "").strip(),
+        "emotion": (req.emotion or "neutral").strip().lower(),
+        "speaker": (req.speaker or "").strip(),
+        "speaker_profile": req.speaker_profile or {},
+    }
+    digest = hashlib.sha1(str(payload).encode("utf-8")).hexdigest()[:20]
+    return f"fixed_{digest}"
+
+
+def _find_character_profile(characters: List[Dict], speaker: str) -> Optional[Dict]:
+    target = (speaker or "").strip()
+    if not target:
+        return None
+    for c in (characters or []):
+        name = str(c.get("name") or c.get("n") or "").strip()
+        alias = str(c.get("alias") or c.get("a") or "").strip()
+        if target == name or (alias and target == alias):
+            return c
+    return None
+
+
+def _tts_url_from_req(req: TTSReq, service) -> str:
+    cacheable = _is_fixed_tts_phrase(req.text)
+    cache_key = _tts_cache_key(req, service) if cacheable else ""
+    if cache_key and cache_key in TTS_FIXED_AUDIO_CACHE:
+        cached_file = TTS_FIXED_AUDIO_CACHE.get(cache_key, "")
+        if cached_file and (AUDIO_OUTPUT_DIR / cached_file).exists():
+            return f"/audio/{cached_file}"
+
+    try:
+        audio_bytes = service.synthesize(req.text, req.emotion or "neutral", speaker_profile=req.speaker_profile)
+    except Exception as remote_err:
+        if getattr(service, "remote", False):
+            print(f"[TTS] siliconflow failed, fallback local: {remote_err}")
+            local = get_local_tts_service()
+            audio_bytes = local.synthesize(req.text, req.emotion or "neutral")
+        else:
+            raise
+    if not audio_bytes:
+        return ""
+
+    AUDIO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"tts_{int(time.time() * 1000)}.wav"
+    out_path = AUDIO_OUTPUT_DIR / filename
+    with open(out_path, "wb") as f:
+        f.write(audio_bytes)
+
+    if cache_key:
+        TTS_FIXED_AUDIO_CACHE[cache_key] = filename
+        TTS_FIXED_AUDIO_CACHE.move_to_end(cache_key)
+        while len(TTS_FIXED_AUDIO_CACHE) > TTS_FIXED_CACHE_MAX_ITEMS:
+            TTS_FIXED_AUDIO_CACHE.popitem(last=False)
+    return f"/audio/{filename}"
+
+
+def _prebuild_utterance_tts(utterances: List[Dict], characters: List[Dict]) -> List[Dict]:
+    if not utterances:
+        return utterances
+    try:
+        service = get_tts_service()
+    except Exception as e:
+        print(f"[PresetTTS] init skipped: {e}")
+        return utterances
+
+    for u in utterances:
+        text = str(u.get("text") or "").strip()
+        speaker = str(u.get("npc_id") or "").strip()
+        if not text:
+            continue
+        profile = _find_character_profile(characters or [], speaker)
+        req = TTSReq(
+            text=text,
+            emotion=str(u.get("emotion") or "neutral"),
+            speaker=speaker or None,
+            speaker_profile=profile,
+        )
+        try:
+            url = _tts_url_from_req(req, service)
+            if url:
+                u["tts_url"] = url
+        except Exception as e:
+            print(f"[PresetTTS] synth failed for speaker={speaker}: {e}")
     return utterances
 
 
@@ -496,6 +817,7 @@ async def health():
 
 @app.post("/api/session/start")
 async def start_session(req: SessionReq):
+    req_t0 = time.perf_counter()
     try:
         eng = get_engine()
     except Exception as e:
@@ -524,7 +846,8 @@ async def start_session(req: SessionReq):
             )
 
         if hasattr(eng, 'use_unified_agent') and eng.use_unified_agent:
-            preset_utterances = _build_preset_opening_utterances(req.characters or [])
+            preset_utterances = _build_preset_opening_utterances(req.characters or [], scenario_id=req.scenario_id)
+            preset_utterances = _prebuild_utterance_tts(preset_utterances, req.characters or [])
             if preset_utterances:
                 return {
                     "success": True,
@@ -534,6 +857,7 @@ async def start_session(req: SessionReq):
                         "utterances": preset_utterances,
                         "should_await_user": True,
                     },
+                    "meta": {"latency_ms": int((time.perf_counter() - req_t0) * 1000), "stage": "session_start"},
                 }
             for result in eng.process_turn(session_id, "", is_interrupt=False):
                 if result.stage == "complete":
@@ -545,11 +869,17 @@ async def start_session(req: SessionReq):
                             "utterances": result.data.get("utterances", []),
                             "should_await_user": result.data.get("should_await_user", True),
                         },
+                        "meta": {"latency_ms": int((time.perf_counter() - req_t0) * 1000), "stage": "session_start"},
                     }
         else:
             session = eng.sessions[session_id]
             opening_utterances = _build_preset_opening_utterances(
-                req.characters or session["scenario"].get("characters", [])
+                req.characters or session["scenario"].get("characters", []),
+                scenario_id=req.scenario_id,
+            )
+            opening_utterances = _prebuild_utterance_tts(
+                opening_utterances,
+                req.characters or session["scenario"].get("characters", []),
             )
             opening = None
             if not opening_utterances:
@@ -577,6 +907,7 @@ async def start_session(req: SessionReq):
                     "features": {"multi_agent": True, "rag": True, "decision_engine": True},
                     "is_unified_agent": False,
                 },
+                "meta": {"latency_ms": int((time.perf_counter() - req_t0) * 1000), "stage": "session_start"},
             }
 
         return {"success": False, "error": "处理失败"}
@@ -588,6 +919,7 @@ async def start_session(req: SessionReq):
 
 @app.post("/api/chat/send")
 async def send_msg(req: ChatReq):
+    req_t0 = time.perf_counter()
     if not req.session_id:
         return {"success": False, "error": "参数错误"}
 
@@ -601,9 +933,12 @@ async def send_msg(req: ChatReq):
     try:
         multimodal = req.multimodal or {}
         mm_result = None
+        mm_latency_ms = 0
         if multimodal:
             try:
+                mm_t0 = time.perf_counter()
                 mm_result = get_mm_analyzer().process_turn(req.message, multimodal)
+                mm_latency_ms = int((time.perf_counter() - mm_t0) * 1000)
             except Exception:
                 mm_result = None
         print(f"[API] 收到多模态数据: {multimodal}")
@@ -618,7 +953,15 @@ async def send_msg(req: ChatReq):
                 payload = result.data or {}
                 if mm_result:
                     payload["multimodal_analysis"] = mm_result
-                return {"success": True, "data": payload}
+                return {
+                    "success": True,
+                    "data": payload,
+                    "meta": {
+                        "latency_ms": int((time.perf_counter() - req_t0) * 1000),
+                        "mm_latency_ms": mm_latency_ms,
+                        "stage": "chat_send",
+                    },
+                }
 
         return {"success": False, "error": "处理失败"}
     except Exception as e:
@@ -748,27 +1091,35 @@ async def mm_analyze(req: MMReq):
 if MULTIPART_AVAILABLE:
     @app.post("/api/stt")
     async def stt(file: UploadFile = File(...)):
+        req_t0 = time.perf_counter()
         try:
             audio_bytes = await file.read()
             service = get_stt_service()
+            stt_latency_ms = 0
             try:
                 result = service.transcribe(audio_bytes)
+                stt_latency_ms = int(getattr(service, "last_latency_ms", 0) or 0)
             except Exception as remote_err:
                 if getattr(service, "remote", False):
                     print(f"[STT] siliconflow failed, fallback local: {remote_err}")
                     local = get_local_stt_service()
+                    local_t0 = time.perf_counter()
                     result = local.transcribe(audio_bytes)
+                    stt_latency_ms = int((time.perf_counter() - local_t0) * 1000)
                 else:
                     raise
 
             mm_result = {}
+            mm_latency_ms = 0
             try:
                 analyzer = get_mm_analyzer()
+                mm_t0 = time.perf_counter()
                 mm_result = analyzer.analyze_multimodal(
                     text=result.get("text", ""),
                     emotion_features=None,
                     voice_features=result.get("voice_features"),
                 ) or {}
+                mm_latency_ms = int((time.perf_counter() - mm_t0) * 1000)
             except Exception as mm_err:
                 # STT text should still be usable even when multimodal dependencies are unavailable.
                 print(f"[STT] multimodal analyze skipped: {mm_err}")
@@ -779,6 +1130,12 @@ if MULTIPART_AVAILABLE:
                     "voice_features": result.get("voice_features", {}),
                     "emotion_state": mm_result.get("emotion_state"),
                     "behavior_cues": mm_result.get("behavior_cues"),
+                },
+                "meta": {
+                    "latency_ms": int((time.perf_counter() - req_t0) * 1000),
+                    "stt_latency_ms": stt_latency_ms,
+                    "mm_latency_ms": mm_latency_ms,
+                    "stage": "stt",
                 },
             }
         except Exception as e:
@@ -794,27 +1151,29 @@ else:
 
 @app.post("/api/tts")
 async def tts(req: TTSReq):
+    req_t0 = time.perf_counter()
     try:
         service = get_tts_service()
-        try:
-            audio_bytes = service.synthesize(req.text, req.emotion or "neutral", speaker_profile=req.speaker_profile)
-        except Exception as remote_err:
-            if getattr(service, "remote", False):
-                print(f"[TTS] siliconflow failed, fallback local: {remote_err}")
-                local = get_local_tts_service()
-                audio_bytes = local.synthesize(req.text, req.emotion or "neutral")
-            else:
-                raise
-
-        if not audio_bytes:
+        cacheable = _is_fixed_tts_phrase(req.text)
+        cache_key = _tts_cache_key(req, service) if cacheable else ""
+        cache_hit = False
+        if cache_key and cache_key in TTS_FIXED_AUDIO_CACHE:
+            cached_file = TTS_FIXED_AUDIO_CACHE.get(cache_key, "")
+            if cached_file and (AUDIO_OUTPUT_DIR / cached_file).exists():
+                cache_hit = True
+        url = _tts_url_from_req(req, service)
+        if not url:
             return {"success": False, "error": "TTS failed"}
 
-        filename = f"tts_{int(time.time() * 1000)}.wav"
-        AUDIO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = AUDIO_OUTPUT_DIR / filename
-        with open(out_path, "wb") as f:
-            f.write(audio_bytes)
-        return {"success": True, "data": {"url": f"/audio/{filename}"}}
+        return {
+            "success": True,
+            "data": {"url": url, "cache_hit": cache_hit},
+            "meta": {
+                "latency_ms": int((time.perf_counter() - req_t0) * 1000),
+                "remote_latency_ms": int(getattr(service, "last_latency_ms", 0) or 0),
+                "stage": "tts",
+            },
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -826,6 +1185,7 @@ async def tts_voices():
         "data": {
             "default_model": SILICONFLOW_CONFIG.tts_model_default,
             "default_voice": SILICONFLOW_CONFIG.tts_voice_default,
+            "official_role_aliases": _moss_voice_aliases(),
             "official_voices": SILICONFLOW_CONFIG.tts_official_voices,
             "preset_role_voice_map": SILICONFLOW_CONFIG.preset_role_voice_map,
             "demographic_voice_map": SILICONFLOW_CONFIG.tts_role_voice_map,
@@ -973,6 +1333,16 @@ async def generate_scenario(req: ScenarioGenerateReq):
         else:
             return {"success": False, "error": "不支持的场景类型"}
         
+        prompt += """
+
+额外硬性要求：
+- 每个 characters 成员必须新增字段 `tts_role`（TTS 角色槽位，按“性别 -> 年龄 -> 身份”推导）。
+- 建议同时提供 `gender`、`age_group`、`identity` 三个字段以支持稳定选声。
+- `tts_role` 只能在官方可选中取值：alex/anna/bella/benjamin/charles/claire/david/diana。
+- 可选同时提供 `tts_voice`（如不提供由系统按 tts_role 自动映射）。
+- 输出中不要遗漏原有字段。
+"""
+
         # 调用LLM生成内容
         response = llm.generate(prompt, max_new_tokens=1500, temperature=0.8)
         
@@ -992,7 +1362,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
                 if req.only_characters:
                     # 只需要characters字段和可选的user_identity字段
                     if "characters" in result:
-                        response_data = {"characters": result["characters"]}
+                        response_data = {"characters": _normalize_characters_tts_fields(result["characters"])}
                         if "user_identity" in result:
                             response_data["user_identity"] = result["user_identity"]
                         return {
@@ -1006,7 +1376,7 @@ async def generate_scenario(req: ScenarioGenerateReq):
                     if "description" in result and "characters" in result:
                         response_data = {
                             "description": result["description"],
-                            "characters": result["characters"]
+                            "characters": _normalize_characters_tts_fields(result["characters"])
                         }
                         if "user_identity" in result:
                             response_data["user_identity"] = result["user_identity"]
@@ -1150,6 +1520,16 @@ async def regenerate_scenario(req: ScenarioGenerateReq):
         else:
             return {"success": False, "error": "不支持的场景类型"}
         
+        prompt += """
+
+额外硬性要求：
+- 每个 characters 成员必须新增字段 `tts_role`（TTS 角色槽位，按“性别 -> 年龄 -> 身份”推导）。
+- 建议同时提供 `gender`、`age_group`、`identity` 三个字段以支持稳定选声。
+- `tts_role` 只能在官方可选中取值：alex/anna/bella/benjamin/charles/claire/david/diana。
+- 可选同时提供 `tts_voice`（如不提供由系统按 tts_role 自动映射）。
+- 输出中不要遗漏原有字段。
+"""
+
         # 调用 LLM 生成内容，使用更高的 temperature 增加多样性
         response = llm.generate(prompt, max_new_tokens=1500, temperature=0.9)
         
@@ -1164,9 +1544,10 @@ async def regenerate_scenario(req: ScenarioGenerateReq):
                 result = json.loads(json_str)
                 
                 if "description" in result and "characters" in result:
+                    normalized_chars = _normalize_characters_tts_fields(result["characters"])
                     response_data = {
                         "description": result["description"],
-                        "characters": result["characters"]
+                        "characters": normalized_chars
                     }
                     if "user_identity" in result:
                         response_data["user_identity"] = result["user_identity"]
@@ -1349,3 +1730,5 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=7860)
+
+

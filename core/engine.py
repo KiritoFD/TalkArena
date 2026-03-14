@@ -27,6 +27,32 @@ def _to_score(value: Any, default: float = 50) -> float:
         return float(default)
 
 
+def _scene_rescue_fallbacks(scenario_id: str) -> List[str]:
+    pools: Dict[str, List[str]] = {
+        "shandong_dinner": [
+            "我先敬您一口茶，酒我少量慢来，咱把事一条条说清楚。",
+            "这话我记下了，我先把态度摆正，再把后面的安排讲明白。",
+            "您提醒得对，我先补一句实在话，再听您给我指路。",
+        ],
+        "business_dinner": [
+            "方向我认可，我先给时间表和负责人，今晚就把执行路径对齐。",
+            "先把目标和边界锁定，细节我会在会后给到书面版本。",
+            "我先确认结果口径，再把资源、节点和风险兜底说清楚。",
+        ],
+        "interview": [
+            "我先给结论，再用STAR讲一个量化案例，最后补复盘改进。",
+            "这个问题我分三点答：目标、行动、结果，各给一个关键数据。",
+            "如果可以我先用30秒结构化回答，再补充协作细节。",
+        ],
+        "debate": [
+            "我先定义命题边界，再给两条证据，最后回应对方核心反驳。",
+            "先不泛化，我们回到可验证前提，再看结论是否成立。",
+            "我先收敛争议点，用事实链而不是情绪判断来推进。",
+        ],
+    }
+    return pools.get(scenario_id, pools["shandong_dinner"])
+
+
 @dataclass
 class ProcessResult:
     stage: str
@@ -313,21 +339,15 @@ class TalkArenaEngine:
             return "会话不存在"
 
         session = self.sessions[session_id]
+        scenario_id = session.get("scenario_id", "shandong_dinner")
+        fallback_suggestions = _scene_rescue_fallbacks(scenario_id)
         
         if not self.llm:
-            fallback_suggestions = [
-                "要不咱先喝口茶，慢慢说？",
-                "这个事确实有意思，你怎么看？",
-                "来，咱换个轻松点的话题？",
-                "要不咱先吃点菜，边吃边聊？",
-                "你说的有道理，那接下来呢？",
-            ]
             import random
             return random.choice(fallback_suggestions)
 
         from core.prompts import get_rescue_master_prompt
 
-        scenario_id = session.get("scenario_id", "shandong_dinner")
         scene_name = session.get("scene_name", "场景")
         dominance = session.get("dominance", {"user": 50, "ai": 50})
         user_dominance = dominance.get("user", 50)
@@ -360,13 +380,6 @@ class TalkArenaEngine:
             return suggestion
         except Exception as e:
             logger.error(f"救场建议生成失败: {e}")
-            fallback_suggestions = [
-                "要不咱先喝口茶，慢慢说？",
-                "这个事确实有意思，你怎么看？",
-                "来，咱换个轻松点的话题？",
-                "要不咱先吃点菜，边吃边聊？",
-                "你说的有道理，那接下来呢？",
-            ]
             import random
             return random.choice(fallback_suggestions)
 
