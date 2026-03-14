@@ -7,6 +7,7 @@ let npcAudioContext=null;
 let npcActiveAudio=null;
 let npcActiveSpeaker='';
 let npcActiveEndPromise=Promise.resolve();
+let npcSpeechQueue=Promise.resolve();
 const ttsPendingMap=new Map();
 const ttsResolvedCache=new Map();
 const MAX_TTS_CACHE_ITEMS=240;
@@ -48,6 +49,7 @@ function stopNpcVoice(){
     npcActiveAudio=null;
     npcActiveSpeaker='';
     npcActiveEndPromise=Promise.resolve();
+    npcSpeechQueue=Promise.resolve();
 }
 function toggleNpcVoice(){
     npcVoiceEnabled=!npcVoiceEnabled;
@@ -87,6 +89,7 @@ function seedNpcSpeechCache(text,emotion,speaker,url){
     }
 }
 async function _requestTTSUrl(text,emotion,speaker,speakerProfile){
+    const t0=performance.now();
     const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
         text:text,
         emotion:emotion||'neutral',
@@ -94,14 +97,26 @@ async function _requestTTSUrl(text,emotion,speaker,speakerProfile){
         speaker_profile:speakerProfile||null
     })});
     const d=await r.json();
-    if(d.success&&d.data&&d.data.url)return d.data.url;
+    if(d.success&&d.data&&d.data.url){
+        console.log(
+            `[TTSClient] ok speaker=${speaker||''} cache_hit=${d?.data?.cache_hit?1:0} `+
+            `latency_ms=${Math.round(performance.now()-t0)} server_ms=${d?.meta?.latency_ms??-1} remote_ms=${d?.meta?.remote_latency_ms??-1}`
+        );
+        return d.data.url;
+    }
     console.warn('[TTS] API failed:',d);
     return '';
 }
 async function _getTTSUrl(text,emotion,speaker){
     const key=_ttsKey(text,emotion,speaker);
-    if(ttsResolvedCache.has(key))return ttsResolvedCache.get(key);
-    if(ttsPendingMap.has(key))return ttsPendingMap.get(key);
+    if(ttsResolvedCache.has(key)){
+        console.log(`[TTSClient] local_cache_hit speaker=${speaker||''}`);
+        return ttsResolvedCache.get(key);
+    }
+    if(ttsPendingMap.has(key)){
+        console.log(`[TTSClient] pending_hit speaker=${speaker||''}`);
+        return ttsPendingMap.get(key);
+    }
     const promise=_requestTTSUrl(text,emotion,speaker,_speakerProfileFromName(speaker))
         .catch((e)=>{console.warn('[TTS] request failed:',e);return '';});
     ttsPendingMap.set(key,promise);
@@ -165,6 +180,12 @@ async function speakNPC(text,emotion,speaker){
     const url=await _getTTSUrl(clean,emotion||'neutral',speaker||'');
     if(!url)return;
     await _playNpcAudio(url,speaker||'');
+}
+function enqueueNPCSpeech(text,emotion,speaker){
+    npcSpeechQueue=npcSpeechQueue
+        .then(()=>speakNPC(text,emotion,speaker))
+        .catch((e)=>{console.warn('[TTSQueue] play failed:',e);});
+    return npcSpeechQueue;
 }
 
 

@@ -79,9 +79,21 @@ function resetUtteranceBlackboard(list){
 }
 
 async function start(){
+const startT0=performance.now();
+console.log('[StartFlow] click_start');
 chars=mems.map(m=>ensureMemberVisuals({...m}));
 show('p3');
+console.log(`[StartFlow] show_p3 cost_ms=${Math.round(performance.now()-startT0)}`);
 await unlockNpcAudio();
+console.log(`[StartFlow] unlock_audio_done cost_ms=${Math.round(performance.now()-startT0)}`);
+if(typeof toggleC==='function'&&!isC){
+    try{
+        toggleC(true).then(()=>{
+            console.log(`[StartFlow] camera_auto_open_async_done isC=${isC?1:0} total_ms=${Math.round(performance.now()-startT0)}`);
+        }).catch(()=>{});
+    }catch(e){}
+}
+console.log(`[StartFlow] camera_auto_open done isC=${isC?1:0} cost_ms=${Math.round(performance.now()-startT0)}`);
 $('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
 renderConversationState('idle');
 runNonverbalLoop();
@@ -104,11 +116,18 @@ if(scene === '群面竞争场'){
     interviewQuestionBox.style.display = 'none';
 }
 
-try{const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:sceneDescription,user_info:(window.userInfo||null),pressure_tags:selectedPressureTags,pressure_value:pressureValue,drinking_capacity:drinkingCapacity})});
-const d=await r.json();if(!d.success){alert(d.error);return}
+try{
+const apiT0=performance.now();
+const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:sceneDescription,user_info:(window.userInfo||null),pressure_tags:selectedPressureTags,pressure_value:pressureValue,drinking_capacity:drinkingCapacity})});
+const d=await r.json();
+console.log(`[StartFlow] api_session_start_done cost_ms=${Math.round(performance.now()-apiT0)} total_ms=${Math.round(performance.now()-startT0)} meta=`,d.meta||{});
+if(!d.success){alert(d.error);return}
 sid=d.data.session_id;
 if(d.data.is_unified_agent){
     resetUtteranceBlackboard(d.data.utterances||[]);
+    const total=(d.data.utterances||[]).length;
+    const withUrl=(d.data.utterances||[]).filter(u=>String(u?.tts_url||'').trim()).length;
+    console.log(`[StartFlow] unified_openings utterances=${total} with_tts_url=${withUrl}`);
     shouldAwaitUser=d.data.should_await_user!==false;
     if(utteranceBlackboard.length>0){
         displayUtterances();
@@ -215,7 +234,11 @@ function addBotStreaming(t,sp,emo){
         renderConversationState('idle');
     }
     
-    speakNPC(t, detectEmotionLabel(t), speaker);
+    if(typeof enqueueNPCSpeech==='function'){
+        enqueueNPCSpeech(t, detectEmotionLabel(t), speaker);
+    }else{
+        speakNPC(t, detectEmotionLabel(t), speaker);
+    }
     const mco=document.querySelector(`#${msgId} .mco`);
     let idx=0;
     return new Promise((resolve)=>{
@@ -250,6 +273,7 @@ async function displayUtterances(){
     isNPCSpeaking=true;
     $('interruptBtn').style.display='inline-flex';
     
+    const lineT0=performance.now();
     const utterance=utteranceBlackboard.shift();
     console.log('[displayUtterances] utterance:', utterance);
     console.log('[displayUtterances] chars:', chars);
@@ -264,8 +288,10 @@ async function displayUtterances(){
         prefetchNpcSpeech(next.text,detectEmotionLabel(next.text),nextSpeaker);
     }
     await waitForAudioTurn(speakerName, Number(utterance.delay_ms)||700);
+    console.log(`[displayUtterances] wait_for_audio_done speaker=${speakerName} cost_ms=${Math.round(performance.now()-lineT0)} has_tts_url=${utterance?.tts_url?1:0}`);
     
     await addBotStreaming(utterance.text,speakerName,detectEmotion(utterance.text));
+    console.log(`[displayUtterances] addBotStreaming_done speaker=${speakerName} cost_ms=${Math.round(performance.now()-lineT0)}`);
     
     const delay=Math.max(300,Math.min(900,Number(utterance.delay_ms)||700));
     setTimeout(displayUtterances,delay);

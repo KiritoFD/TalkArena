@@ -12,8 +12,11 @@ import time
 import hashlib
 import json
 import threading
+import copy
+import builtins
 from pathlib import Path
 from collections import OrderedDict
+from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -37,6 +40,13 @@ from config.siliconflow import (
 app = FastAPI(title="TalkArena")
 MULTIPART_AVAILABLE = importlib.util.find_spec("multipart") is not None
 logger = logging.getLogger("TalkArenaAPI")
+
+# 所有 print 日志统一加时间戳（毫秒）
+_ORIGINAL_PRINT = builtins.print
+def _ts_print(*args, **kwargs):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    _ORIGINAL_PRINT(f"[{ts}]", *args, **kwargs)
+builtins.print = _ts_print
 
 # 引入认证路由
 try:
@@ -540,6 +550,20 @@ def get_tts_service():
     return tts_service
 
 
+@app.on_event("startup")
+async def _prewarm_runtime():
+    t0 = time.perf_counter()
+    try:
+        get_engine()
+    except Exception as e:
+        print(f"[Warmup] get_engine failed: {e}")
+    try:
+        get_tts_service()
+    except Exception as e:
+        print(f"[Warmup] get_tts_service failed: {e}")
+    print(f"[Warmup] startup prewarm done cost_ms={int((time.perf_counter()-t0)*1000)}")
+
+
 class ChatReq(BaseModel):
     session_id: str
     message: str = ""
@@ -980,15 +1004,23 @@ def _async_warmup_tts(utterances: List[Dict], characters: List[Dict]) -> None:
             print(f"[PresetTTS] warmup failed for speaker={speaker}: {e}")
 
 
-def _prebuild_utterance_tts(utterances: List[Dict], characters: List[Dict]) -> List[Dict]:
+def _prebuild_utterance_tts(
+    utterances: List[Dict],
+    characters: List[Dict],
+    force_generate_fixed: bool = False,
+) -> List[Dict]:
     if not utterances:
         return utterances
+    t0 = time.perf_counter()
     try:
         service = get_tts_service()
     except Exception as e:
         print(f"[PresetTTS] init skipped: {e}")
         return utterances
 
+    attached_count = 0
+    generated_count = 0
+    miss_count = 0
     for u in utterances:
         text = str(u.get("text") or "").strip()
         speaker = str(u.get("npc_id") or "").strip()
@@ -1002,7 +1034,6 @@ def _prebuild_utterance_tts(utterances: List[Dict], characters: List[Dict]) -> L
             speaker_profile=profile,
         )
         try:
-            # Only attach URL synchronously when fixed-phrase cache already exists.
             cacheable = _is_fixed_tts_phrase(text)
             url = ""
             if cacheable:
@@ -1010,8 +1041,15 @@ def _prebuild_utterance_tts(utterances: List[Dict], characters: List[Dict]) -> L
                 fixed_path = AUDIO_OUTPUT_DIR / fixed_name
                 if fixed_path.exists():
                     url = f"/audio/{fixed_name}"
+                elif force_generate_fixed:
+                    url = _ensure_fixed_mp3(req, service)
+                    if url:
+                        generated_count += 1
             if url:
                 u["tts_url"] = url
+                attached_count += 1
+            else:
+                miss_count += 1
         except Exception as e:
             print(f"[PresetTTS] synth failed for speaker={speaker}: {e}")
     # Warm up fixed phrases in background; do not block API latency.
@@ -1024,6 +1062,14 @@ def _prebuild_utterance_tts(utterances: List[Dict], characters: List[Dict]) -> L
         th.start()
     except Exception as e:
         print(f"[PresetTTS] warmup thread start failed: {e}")
+    total_ms = int((time.perf_counter() - t0) * 1000)
+    print(
+        "[PresetTTS] prebuild "
+        f"force_generate_fixed={force_generate_fixed} "
+        f"utterances={len(utterances)} "
+        f"attached={attached_count} generated={generated_count} miss={miss_count} "
+        f"cost_ms={total_ms}"
+    )
     return utterances
 
 
@@ -1157,12 +1203,18 @@ async def health():
 @app.post("/api/session/start")
 async def start_session(req: SessionReq):
     req_t0 = time.perf_counter()
+    print(
+        "[SessionStart] begin "
+        f"scenario_id={req.scenario_id} scene_name={req.scene_name} "
+        f"chars={len(req.characters or [])}"
+    )
     try:
         eng = get_engine()
     except Exception as e:
         return {"success": False, "error": str(e)}
 
     try:
+        step_t0 = time.perf_counter()
         try:
             session_id = eng.start_session(
                 scenario_id=req.scenario_id,
@@ -1183,10 +1235,26 @@ async def start_session(req: SessionReq):
                 scene_description=req.scene_description,
                 user_info=req.user_info,
             )
+        start_cost_ms = int((time.perf_counter() - step_t0) * 1000)
+        print(f"[SessionStart] engine.start_session cost_ms={start_cost_ms} session_id={session_id}")
 
         if hasattr(eng, 'use_unified_agent') and eng.use_unified_agent:
+            step_t0 = time.perf_counter()
             preset_utterances = _build_preset_opening_utterances(req.characters or [], scenario_id=req.scenario_id)
-            preset_utterances = _prebuild_utterance_tts(preset_utterances, req.characters or [])
+            build_cost_ms = int((time.perf_counter() - step_t0) * 1000)
+            step_t0 = time.perf_counter()
+            preset_utterances = _prebuild_utterance_tts(
+                preset_utterances,
+                req.characters or [],
+                force_generate_fixed=True,
+            )
+            tts_cost_ms = int((time.perf_counter() - step_t0) * 1000)
+            with_url = sum(1 for u in (preset_utterances or []) if str(u.get("tts_url") or "").strip())
+            print(
+                "[SessionStart] unified preset "
+                f"build_cost_ms={build_cost_ms} tts_cost_ms={tts_cost_ms} "
+                f"utterances={len(preset_utterances or [])} with_tts_url={with_url}"
+            )
             if preset_utterances:
                 return {
                     "success": True,
@@ -1198,14 +1266,21 @@ async def start_session(req: SessionReq):
                     },
                     "meta": {"latency_ms": int((time.perf_counter() - req_t0) * 1000), "stage": "session_start"},
                 }
+            print("[SessionStart] unified preset empty, fallback to process_turn")
             for result in eng.process_turn(session_id, "", is_interrupt=False):
                 if result.stage == "complete":
+                    utterances = result.data.get("utterances", [])
+                    with_url = sum(1 for u in (utterances or []) if str(u.get("tts_url") or "").strip())
+                    print(
+                        "[SessionStart] unified process_turn complete "
+                        f"utterances={len(utterances or [])} with_tts_url={with_url}"
+                    )
                     return {
                         "success": True,
                         "data": {
                             "session_id": session_id,
                             "is_unified_agent": True,
-                            "utterances": result.data.get("utterances", []),
+                            "utterances": utterances,
                             "should_await_user": result.data.get("should_await_user", True),
                         },
                         "meta": {"latency_ms": int((time.perf_counter() - req_t0) * 1000), "stage": "session_start"},
@@ -1219,6 +1294,12 @@ async def start_session(req: SessionReq):
             opening_utterances = _prebuild_utterance_tts(
                 opening_utterances,
                 req.characters or session["scenario"].get("characters", []),
+                force_generate_fixed=True,
+            )
+            with_url = sum(1 for u in (opening_utterances or []) if str(u.get("tts_url") or "").strip())
+            print(
+                "[SessionStart] classic opening "
+                f"utterances={len(opening_utterances or [])} with_tts_url={with_url}"
             )
             opening = None
             if not opening_utterances:
@@ -1254,6 +1335,8 @@ async def start_session(req: SessionReq):
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+    finally:
+        print(f"[SessionStart] end total_cost_ms={int((time.perf_counter() - req_t0) * 1000)}")
 
 
 @app.post("/api/chat/send")
@@ -1524,13 +1607,25 @@ async def tts(req: TTSReq):
                 cache_hit = True
         url = _tts_url_from_req(req, service)
         if not url:
+            print(
+                "[TTSAPI] failed "
+                f"speaker={req.speaker or ''} cacheable={cacheable} "
+                f"text_len={len(req.text or '')}"
+            )
             return {"success": False, "error": "TTS failed"}
+        total_ms = int((time.perf_counter() - req_t0) * 1000)
+        print(
+            "[TTSAPI] ok "
+            f"speaker={req.speaker or ''} cacheable={cacheable} cache_hit={cache_hit} "
+            f"text_len={len(req.text or '')} url={url} "
+            f"total_ms={total_ms} remote_ms={int(getattr(service, 'last_latency_ms', 0) or 0)}"
+        )
 
         return {
             "success": True,
             "data": {"url": url, "cache_hit": cache_hit},
             "meta": {
-                "latency_ms": int((time.perf_counter() - req_t0) * 1000),
+                "latency_ms": total_ms,
                 "remote_latency_ms": int(getattr(service, "last_latency_ms", 0) or 0),
                 "stage": "tts",
             },
@@ -2148,6 +2243,15 @@ HTML_TEMPLATE = _load_html_template()
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=7860)
+    log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    if "formatters" in log_config:
+        if "default" in log_config["formatters"]:
+            log_config["formatters"]["default"]["fmt"] = "%(asctime)s | %(levelprefix)s %(message)s"
+            log_config["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+        if "access" in log_config["formatters"]:
+            log_config["formatters"]["access"]["fmt"] = "%(asctime)s | %(levelprefix)s %(client_addr)s - \"%(request_line)s\" %(status_code)s"
+            log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+
+    uvicorn.run(app, host="127.0.0.1", port=7860, log_config=log_config)
 
 
