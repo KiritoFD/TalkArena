@@ -127,7 +127,7 @@ class LLMLoader:
         self.request_timeout = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
         self.max_retries = int(os.getenv("LLM_MAX_RETRIES", "2"))
         self.enable_local_fallback = (
-            os.getenv("LLM_ENABLE_LOCAL_FALLBACK", "1").strip().lower()
+            os.getenv("LLM_ENABLE_LOCAL_FALLBACK", "0").strip().lower()
             not in {"0", "false", "no"}
         )
         self._local_fallback = None
@@ -272,18 +272,6 @@ class LLMLoader:
                 return self._generate_api(text, max_new_tokens, temperature)
             except Exception as e:
                 errors.append(f"endpoint#{endpoint_idx + 1}: {type(e).__name__}: {e}")
-
-        if self.enable_local_fallback:
-            try:
-                local = self._get_local_fallback()
-                self.provider = "local"
-                self.model_name = local.model_id
-                self.base_url = "local"
-                return local.generate(
-                    text, max_new_tokens=max_new_tokens, temperature=temperature
-                )
-            except Exception as e:
-                errors.append(f"local_fallback: {type(e).__name__}: {e}")
 
         raise RuntimeError("All API endpoints failed: " + " | ".join(errors))
 

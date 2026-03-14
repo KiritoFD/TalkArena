@@ -1394,7 +1394,7 @@ def get_unified_agent_dialogue_prompt(
     word_limit: int
 ) -> str:
     """获取Unified Agent对话生成prompt"""
-    return format_prompt(
+    base = format_prompt(
         UNIFIED_AGENT_DIALOGUE_PROMPT,
         scene_name=scene_name,
         atmosphere=atmosphere,
@@ -1407,8 +1407,16 @@ def get_unified_agent_dialogue_prompt(
         user_input_hint=user_input_hint,
         word_limit=word_limit
     )
-
-
+    strict_json_rules = (
+        "\n\n[STRICT_JSON_RULES]\n"
+        "- 输出必须是一个 JSON 对象，且只能输出 JSON。\n"
+        "- 禁止 markdown 代码块，禁止任何前后解释文字。\n"
+        "- 所有 key 和字符串必须使用双引号。\n"
+        "- 字符串内部如果有双引号，必须转义为 \\\"。\n"
+        "- 严禁尾逗号，严禁注释，必须能被标准 json.loads 解析。\n"
+        "- utterances 必须是非空数组。\n"
+    )
+    return base + strict_json_rules
 def get_scene_system_prompt(scene_type: str) -> Optional[str]:
     """获取场景特定的system prompt"""
     return SCENE_SYSTEM_PROMPTS.get(scene_type)

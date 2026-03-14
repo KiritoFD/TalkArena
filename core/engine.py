@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Generator, List, Optional
 import logging
 import uuid
+import time
 
 logger = logging.getLogger("TalkArena")
 
@@ -340,13 +341,11 @@ class TalkArenaEngine:
 
         session = self.sessions[session_id]
         scenario_id = session.get("scenario_id", "shandong_dinner")
-        fallback_suggestions = _scene_rescue_fallbacks(scenario_id)
         
         if not self.llm:
-            import random
-            return random.choice(fallback_suggestions)
+            raise RuntimeError("LLM unavailable for rescue generation")
 
-        from core.prompts import get_rescue_master_prompt
+        from core.prompts.registry import get_rescue_master_prompt
 
         scene_name = session.get("scene_name", "场景")
         dominance = session.get("dominance", {"user": 50, "ai": 50})
@@ -380,41 +379,14 @@ class TalkArenaEngine:
             return suggestion
         except Exception as e:
             logger.error(f"救场建议生成失败: {e}")
-            import random
-            return random.choice(fallback_suggestions)
+            raise
 
     def end_session(self, session_id: str) -> Dict[str, Any]:
         if session_id not in self.sessions:
             return {"error": "session_not_found"}
 
         session = self.sessions[session_id]
-
-        # 生成完整复盘报告（任何异常都返回兜底报告，避免前端白屏）
-        try:
-            report = self._generate_full_report(session)
-        except Exception as e:
-            logger.exception(f"end_session 生成复盘失败: {e}")
-            report = {
-                "scene_name": session.get("scene_name", "未命名场景"),
-                "turn_count": session.get("turn_count", 0),
-                "result": "复盘生成失败",
-                "medal": "📘",
-                "scores": {
-                    "oily": 50,
-                    "friendliness": 50,
-                    "logic": 50,
-                    "humor": 50,
-                    "respect": 50,
-                    "total": 50,
-                },
-                "summary": "本轮总结生成异常，建议稍后重试。",
-                "suggestion": "可先继续对话训练，或重新开始一次新会话。",
-                "npc_os_list": [],
-                "final_dominance": {
-                    "user": session.get("dominance", {}).get("user", 50),
-                    "ai": session.get("dominance", {}).get("ai", 50),
-                },
-            }
+        report = self._generate_full_report(session)
 
         # 清理 session
         del self.sessions[session_id]
@@ -423,12 +395,36 @@ class TalkArenaEngine:
 
     def _generate_full_report(self, session: Dict[str, Any]) -> Dict[str, Any]:
         """生成完整的复盘报告，包含五维度评分、综合点评、NPC 内心 OS、改进建议"""
-        from core.prompts import (
+        from core.prompts.registry import (
             get_report_scores_prompt,
             get_report_summary_prompt,
             get_report_npc_inner_voice_prompt,
         )
         import json
+        
+        def _llm_generate_with_retry(prompt: str, max_new_tokens: int, temperature: float = 0.7) -> str:
+            last_err = None
+            for i in range(3):
+                try:
+                    out = self.llm.generate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+                    txt = str(out or "").strip()
+                    if not txt:
+                        raise RuntimeError("empty llm output")
+                    return txt
+                except Exception as e:
+                    last_err = e
+                    if i < 2:
+                        time.sleep(1.0 + i * 0.5)
+                        continue
+            raise RuntimeError(f"report llm generate failed after retries: {last_err}")
+
+        def _extract_json_obj(raw: str) -> Dict[str, Any]:
+            txt = str(raw or "").strip()
+            s = txt.find("{")
+            e = txt.rfind("}")
+            if s < 0 or e < s:
+                raise ValueError("no json object in llm output")
+            return json.loads(txt[s : e + 1])
 
         scene_name = session.get("scene_name", "未命名场景")
         npc_list = session.get("scenario", {}).get("characters", [])
@@ -454,103 +450,55 @@ class TalkArenaEngine:
             result = "🤝 势均力敌"
             medal_score = 70
 
-        # 1. 生成五维度评分
-        try:
-            scores_prompt = get_report_scores_prompt(
-                scene_name=scene_name,
-                npc_list=json.dumps(npc_list, ensure_ascii=False),
-                history_log=history_log,
-            )
-            scores_result = self.llm.generate(scores_prompt, max_new_tokens=200)
-
-            # 解析 JSON
-            try:
-                scores_data = json.loads(scores_result.strip())
-                metrics_raw = scores_data.get("metrics", {})
-                if not isinstance(metrics_raw, dict):
-                    metrics_raw = {}
-                metrics = {
-                    "oily": _to_score(metrics_raw.get("oily", 50)),
-                    "friendliness": _to_score(metrics_raw.get("friendliness", 50)),
-                    "logic": _to_score(metrics_raw.get("logic", 50)),
-                    "humor": _to_score(metrics_raw.get("humor", 50)),
-                    "respect": _to_score(metrics_raw.get("respect", 50)),
-                }
-            except:
-                # 解析失败时使用默认值
-                metrics = {
-                    "oily": 50,
-                    "friendliness": 50,
-                    "logic": 50,
-                    "humor": 50,
-                    "respect": 50,
-                }
-        except Exception as e:
-            logger.error(f"生成评分失败：{e}")
-            metrics = {
-                "oily": 50,
-                "friendliness": 50,
-                "logic": 50,
-                "humor": 50,
-                "respect": 50,
-            }
+        # 1. 生成五维度评分（strict: no fallback）
+        scores_prompt = get_report_scores_prompt(
+            scene_name=scene_name,
+            npc_list=json.dumps(npc_list, ensure_ascii=False),
+            history_log=history_log,
+        )
+        scores_result = _llm_generate_with_retry(scores_prompt, max_new_tokens=220, temperature=0.4)
+        scores_data = _extract_json_obj(scores_result)
+        metrics_raw = scores_data.get("metrics", {})
+        if not isinstance(metrics_raw, dict):
+            raise ValueError("report scores payload missing 'metrics' dict")
+        metrics = {
+            "oily": _to_score(metrics_raw.get("oily")),
+            "friendliness": _to_score(metrics_raw.get("friendliness")),
+            "logic": _to_score(metrics_raw.get("logic")),
+            "humor": _to_score(metrics_raw.get("humor")),
+            "respect": _to_score(metrics_raw.get("respect")),
+        }
 
         # 2. 计算总分和勋章
         total_score = sum(metrics.values()) / len(metrics) if metrics else 50
         medal = self._determine_medal(total_score)
 
-        # 3. 生成综合点评
-        try:
-            summary_prompt = get_report_summary_prompt(
-                scene_name=scene_name,
-                npc_list=json.dumps(npc_list, ensure_ascii=False),
-                history_log=history_log,
-                medal=self._get_medal_name(medal),
-            )
-            summary = self.llm.generate(summary_prompt, max_new_tokens=300)
-        except Exception as e:
-            logger.error(f"生成点评失败：{e}")
-            summary = f"{turn_count}轮对话中你的表现为：{result}。"
+        # 3. 生成综合点评（strict: no fallback）
+        summary_prompt = get_report_summary_prompt(
+            scene_name=scene_name,
+            npc_list=json.dumps(npc_list, ensure_ascii=False),
+            history_log=history_log,
+            medal=self._get_medal_name(medal),
+        )
+        summary = _llm_generate_with_retry(summary_prompt, max_new_tokens=320, temperature=0.6)
+        if not str(summary or "").strip():
+            raise ValueError("empty report summary")
 
-        # 4. 生成 NPC 内心 OS 和改进建议
-        npc_os_list = []
-        suggestion = ""
-        try:
-            npc_prompt = get_report_npc_inner_voice_prompt(
-                scene_name=scene_name,
-                npc_list=json.dumps(npc_list, ensure_ascii=False),
-                history_log=history_log,
-                medal=self._get_medal_name(medal),
-            )
-            npc_result = self.llm.generate(npc_prompt, max_new_tokens=400)
-
-            # 解析 JSON
-            try:
-                npc_data = json.loads(npc_result.strip())
-                npc_os_list = npc_data.get("npc_inner_voice", [])
-                suggestion = npc_data.get("high_light_suggestion", "")
-            except:
-                # 解析失败时使用默认值
-                for char in npc_list:
-                    npc_os_list.append(
-                        {
-                            "name": char.get("name", "NPC"),
-                            "avatar": char.get("avatar", "👤"),
-                            "os": "表现尚可，继续努力。",
-                        }
-                    )
-                suggestion = "建议多观察，少说话。"
-        except Exception as e:
-            logger.error(f"生成 NPC 内心 OS 失败：{e}")
-            for char in npc_list:
-                npc_os_list.append(
-                    {
-                        "name": char.get("name", "NPC"),
-                        "avatar": char.get("avatar", "👤"),
-                        "os": "表现一般。",
-                    }
-                )
-            suggestion = "建议继续训练提升。"
+        # 4. 生成 NPC 内心 OS 和改进建议（strict: no fallback）
+        npc_prompt = get_report_npc_inner_voice_prompt(
+            scene_name=scene_name,
+            npc_list=json.dumps(npc_list, ensure_ascii=False),
+            history_log=history_log,
+            medal=self._get_medal_name(medal),
+        )
+        npc_result = _llm_generate_with_retry(npc_prompt, max_new_tokens=420, temperature=0.6)
+        npc_data = _extract_json_obj(npc_result)
+        npc_os_list = npc_data.get("npc_inner_voice", [])
+        suggestion = npc_data.get("high_light_suggestion", "")
+        if not isinstance(npc_os_list, list):
+            raise ValueError("npc_inner_voice must be a list")
+        if not str(suggestion or "").strip():
+            raise ValueError("high_light_suggestion is empty")
 
         return {
             "scene_name": scene_name,

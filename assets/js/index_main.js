@@ -15,6 +15,9 @@ let profileSceneActive=null;
 let lastPageBeforeProfile='p1';
 let isEndingSession=false;
 let pendingEndTimeout=null;
+let endLoadingTimer=null;
+let endLoadingProgress=0;
+let lastRenderedReportData=null;
 const pool={
 "家庭饭桌试炼":{id:"shandong_dinner",icon:"🍜",members:[
 {a:"👴",n:"大舅",r:"主陪·长辈",b:"看重礼数与体面，善于在热闹中施压",gender:"male",age_group:"elder",identity:"senior",tts_role:"charles"},
@@ -1110,8 +1113,42 @@ async function regenerateScene() {
 function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.round(a)}
 async function rescue(){if(!sid)return;try{const r=await fetch('/api/chat/rescue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid})});const d=await r.json();if(d.success)$('ci2').value=d.data.suggestion}catch(e){}}
 
+function normalizeReportData(data){
+    const d=(data&&typeof data==='object')?{...data}:{};
+    const rawScores=(d.scores&&typeof d.scores==='object')?{...d.scores}:{};
+    const legacyToModern={
+        emotional:'friendliness',
+        reaction:'logic'
+    };
+    Object.keys(legacyToModern).forEach((oldKey)=>{
+        const newKey=legacyToModern[oldKey];
+        if(rawScores[newKey]===undefined&&rawScores[oldKey]!==undefined){
+            rawScores[newKey]=rawScores[oldKey];
+        }
+    });
+    const scores={
+        oily:Number(rawScores.oily??50),
+        friendliness:Number(rawScores.friendliness??50),
+        logic:Number(rawScores.logic??50),
+        humor:Number(rawScores.humor??50),
+        respect:Number(rawScores.respect??50),
+        total:Number(rawScores.total??0)
+    };
+    if(!scores.total||!Number.isFinite(scores.total)){
+        scores.total=Math.round((scores.oily+scores.friendliness+scores.logic+scores.humor+scores.respect)/5);
+    }
+    const npcList=Array.isArray(d.npc_os_list)?d.npc_os_list:
+        Array.isArray(d.npc_thoughts)?d.npc_thoughts:
+        Array.isArray(d.npc_list)?d.npc_list:[];
+    d.scores=scores;
+    d.npc_os_list=npcList;
+    if(!d.summary)d.summary='暂无综合点评';
+    if(!d.suggestion)d.suggestion='建议继续训练，逐步提升表达的结构与节奏。';
+    return d;
+}
+
 function buildReportHtml(data){
-    const safeData=data||{};
+    const safeData=normalizeReportData(data||{});
     const npcList=Array.isArray(safeData.npc_os_list)?safeData.npc_os_list:[];
     const scores=(safeData.scores&&typeof safeData.scores==='object')?safeData.scores:{};
     const medalNames={
@@ -1129,11 +1166,11 @@ function buildReportHtml(data){
         <div style="margin-top:14px;display:inline-flex;align-items:center;gap:8px;background:#fee2e2;color:#991b1b;padding:8px 14px;border-radius:999px;font-weight:800;">${safeData.medal||'🥉'} ${medalName}</div>
         <div style="margin-top:22px;display:flex;justify-content:center;"><canvas id="radarChart" width="280" height="280"></canvas></div>
         <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px;">
-            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">圆滑度</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.oily||0}</div></div>
-            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">亲和力</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.friendliness||0}</div></div>
-            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">逻辑性</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.logic||0}</div></div>
-            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">幽默感</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.humor||0}</div></div>
-            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">懂规矩</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.respect||0}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">圆滑度</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.oily??50}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">亲和力</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.friendliness??50}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">逻辑性</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.logic??50}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">幽默感</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.humor??50}</div></div>
+            <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#64748b;">懂规矩</div><div style="margin-top:4px;font-size:22px;font-weight:800;color:#0f172a;">${scores.respect??50}</div></div>
             <div style="background:#fff3cd;border:1px solid #fde68a;border-radius:14px;padding:12px;"><div style="font-size:12px;color:#92400e;">总分</div><div style="margin-top:4px;font-size:24px;font-weight:900;color:#7c2d12;">${scores.total||0}</div></div>
         </div>
     </section>
@@ -1152,8 +1189,311 @@ function buildReportHtml(data){
             <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">下一轮提升点</h3>
             <p style="margin:0;font-size:14px;line-height:1.8;color:#334155;white-space:pre-wrap;">${safeData.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
         </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+            <button class="view-btn" onclick="saveCurrentReportImage()">保存到本地</button>
+            <button class="view-btn" onclick="shareCurrentReport()">分享报告</button>
+            <button class="view-btn" onclick="goCfg()">再练一局</button>
+        </div>
     </section>
 </div>`;
+}
+
+function _buildShareText(data){
+    const d=(data&&typeof data==='object')?data:{};
+    const scores=(d.scores&&typeof d.scores==='object')?d.scores:{};
+    return [
+        `【TalkArena 复盘分享】`,
+        `场景：${d.scene_name||'未命名场景'}`,
+        `总分：${scores.total??'--'}`,
+        `总结：${d.summary||'暂无总结'}`,
+        `建议：${d.suggestion||'暂无建议'}`
+    ].join('\n');
+}
+
+function _wrapCanvasText(ctx,text,maxWidth){
+    const raw=String(text||'').replace(/\r/g,'').split('\n');
+    const lines=[];
+    raw.forEach(seg=>{
+        let line='';
+        for(const ch of seg){
+            const next=line+ch;
+            if(ctx.measureText(next).width>maxWidth&&line){
+                lines.push(line);
+                line=ch;
+            }else{
+                line=next;
+            }
+        }
+        lines.push(line||'');
+    });
+    return lines;
+}
+
+function _reportImageDataUrl(data){
+    const d=(data&&typeof data==='object')?data:{};
+    const scores=(d.scores&&typeof d.scores==='object')?d.scores:{};
+    const npcList=Array.isArray(d.npc_os_list)?d.npc_os_list:[];
+    const canvas=document.createElement('canvas');
+    canvas.width=1080;
+    canvas.height=1840;
+    const ctx=canvas.getContext('2d');
+    ctx.fillStyle='#f8fafc';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle='#ffffff';
+    ctx.strokeStyle='#e2e8f0';
+    ctx.lineWidth=2;
+    ctx.fillRect(40,40,1000,1760);
+    ctx.strokeRect(40,40,1000,1760);
+
+    ctx.fillStyle='#0f172a';
+    ctx.font='bold 52px sans-serif';
+    ctx.fillText('TalkArena 复盘报告',90,130);
+    ctx.font='600 34px sans-serif';
+    ctx.fillStyle='#334155';
+    ctx.fillText(`场景：${d.scene_name||'未命名场景'}`,90,190);
+    ctx.fillText(`总分：${scores.total??'--'}`,90,240);
+
+    // Radar chart
+    const cx=255, cy=460, rr=150;
+    const dims=[
+        {k:'oily',label:'圆滑度'},
+        {k:'friendliness',label:'亲和力'},
+        {k:'logic',label:'逻辑性'},
+        {k:'humor',label:'幽默感'},
+        {k:'respect',label:'懂规矩'},
+    ];
+    ctx.strokeStyle='#dbeafe';
+    for(let lv=1;lv<=5;lv++){
+        const r=rr*lv/5;
+        ctx.beginPath();
+        for(let i=0;i<dims.length;i++){
+            const a=-Math.PI/2 + i*Math.PI*2/dims.length;
+            const x=cx + Math.cos(a)*r;
+            const y=cy + Math.sin(a)*r;
+            if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+    }
+    ctx.strokeStyle='#bfdbfe';
+    for(let i=0;i<dims.length;i++){
+        const a=-Math.PI/2 + i*Math.PI*2/dims.length;
+        ctx.beginPath();
+        ctx.moveTo(cx,cy);
+        ctx.lineTo(cx + Math.cos(a)*rr, cy + Math.sin(a)*rr);
+        ctx.stroke();
+    }
+    ctx.fillStyle='rgba(59,130,246,.24)';
+    ctx.strokeStyle='#2563eb';
+    ctx.lineWidth=3;
+    ctx.beginPath();
+    for(let i=0;i<dims.length;i++){
+        const val=Math.max(0,Math.min(100,Number(scores[dims[i].k]??50)));
+        const a=-Math.PI/2 + i*Math.PI*2/dims.length;
+        const x=cx + Math.cos(a)*rr*(val/100);
+        const y=cy + Math.sin(a)*rr*(val/100);
+        if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle='#1e3a8a';
+    ctx.font='22px sans-serif';
+    dims.forEach((d0,i)=>{
+        const a=-Math.PI/2 + i*Math.PI*2/dims.length;
+        const lx=cx + Math.cos(a)*(rr+34);
+        const ly=cy + Math.sin(a)*(rr+34);
+        ctx.fillText(d0.label,lx-34,ly+6);
+    });
+
+    // score cards
+    const cardX=520, cardY=300, cardW=460, cardH=330;
+    ctx.fillStyle='#f8fafc';
+    ctx.fillRect(cardX,cardY,cardW,cardH);
+    ctx.strokeStyle='#e2e8f0';
+    ctx.strokeRect(cardX,cardY,cardW,cardH);
+    const cards=[
+        ['圆滑度',scores.oily??50],['亲和力',scores.friendliness??50],
+        ['逻辑性',scores.logic??50],['幽默感',scores.humor??50],
+        ['懂规矩',scores.respect??50],['总分',scores.total??0],
+    ];
+    for(let i=0;i<cards.length;i++){
+        const row=Math.floor(i/2), col=i%2;
+        const x=cardX+20+col*220, y=cardY+20+row*98;
+        ctx.fillStyle=(cards[i][0]==='总分')?'#fef3c7':'#ffffff';
+        ctx.strokeStyle='#e2e8f0';
+        ctx.fillRect(x,y,200,80);
+        ctx.strokeRect(x,y,200,80);
+        ctx.fillStyle='#64748b';
+        ctx.font='20px sans-serif';
+        ctx.fillText(String(cards[i][0]),x+12,y+28);
+        ctx.fillStyle='#0f172a';
+        ctx.font='bold 30px sans-serif';
+        ctx.fillText(String(cards[i][1]),x+12,y+64);
+    }
+
+    let y=700;
+    const block=(title,content)=>{
+        ctx.fillStyle='#111827';
+        ctx.font='bold 30px sans-serif';
+        ctx.fillText(title,90,y);
+        y+=18;
+        ctx.strokeStyle='#e5e7eb';
+        ctx.beginPath();
+        ctx.moveTo(90,y+16);
+        ctx.lineTo(990,y+16);
+        ctx.stroke();
+        y+=56;
+        ctx.fillStyle='#334155';
+        ctx.font='24px sans-serif';
+        const lines=_wrapCanvasText(ctx,content||'暂无',900);
+        lines.forEach(line=>{ctx.fillText(line,90,y);y+=38;});
+        y+=22;
+    };
+    block('综合点评',d.summary||'暂无综合点评');
+    block('下一轮提升点',d.suggestion||'继续保持稳定表达。');
+    if(npcList.length){
+        const txt=npcList.map(n=>`${n.name||'NPC'}：${n.content||n.os||n.thought||'暂无反馈'}`).join('\n');
+        block('NPC 内心 OS',txt);
+    }
+    ctx.fillStyle='#94a3b8';
+    ctx.font='20px sans-serif';
+    ctx.fillText(`生成时间：${new Date().toLocaleString()}`,90,1720);
+    return canvas.toDataURL('image/png');
+}
+
+function _ensureQrModal(){
+    let modal=document.getElementById('shareQrModal');
+    if(modal)return modal;
+    modal=document.createElement('div');
+    modal.id='shareQrModal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(2,6,23,.55);display:none;align-items:center;justify-content:center;z-index:3000;';
+    modal.innerHTML=`
+<div style="width:min(92vw,460px);background:#fff;border-radius:16px;padding:16px;box-shadow:0 20px 40px rgba(15,23,42,.25);">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+    <div style="font-size:18px;font-weight:900;color:#0f172a;">扫码分享报告</div>
+    <button id="shareQrCloseBtn" class="view-btn" style="padding:6px 10px;">关闭</button>
+  </div>
+  <div id="shareQrBody" style="margin-top:12px;display:flex;flex-direction:column;align-items:center;gap:10px;">
+    <div style="font-size:13px;color:#64748b;">生成中...</div>
+  </div>
+</div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click',e=>{if(e.target===modal)modal.style.display='none';});
+    const closeBtn=modal.querySelector('#shareQrCloseBtn');
+    if(closeBtn)closeBtn.onclick=()=>{modal.style.display='none';};
+    return modal;
+}
+
+function _openQrModalLoading(){
+    const modal=_ensureQrModal();
+    modal.style.display='flex';
+    const body=modal.querySelector('#shareQrBody');
+    if(body){
+        body.innerHTML='<div style="font-size:13px;color:#64748b;">正在生成报告图片与二维码...</div>';
+    }
+}
+
+function _openQrModalResult(qrSrc,shareUrl){
+    const modal=_ensureQrModal();
+    modal.style.display='flex';
+    const body=modal.querySelector('#shareQrBody');
+    if(!body)return;
+    body.innerHTML=`
+<img src="${qrSrc}" alt="share qr" style="width:300px;height:300px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;" />
+<div style="font-size:12px;color:#64748b;text-align:center;word-break:break-all;">${shareUrl}</div>
+<div style="display:flex;gap:8px;">
+  <button id="copyShareLinkBtn" class="view-btn">复制链接</button>
+  <a class="view-btn" href="${shareUrl}" target="_blank" rel="noopener">打开链接</a>
+</div>`;
+    const copyBtn=modal.querySelector('#copyShareLinkBtn');
+    if(copyBtn){
+        copyBtn.onclick=async()=>{
+            try{await navigator.clipboard.writeText(shareUrl);alert('已复制链接');}
+            catch(e){alert(shareUrl);}
+        };
+    }
+}
+
+async function shareCurrentReport(){
+    const data=lastRenderedReportData||{};
+    const text=_buildShareText(data);
+    _openQrModalLoading();
+    try{
+        const imageData=_reportImageDataUrl(data);
+        const resp=await fetch('/api/share/report-image',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({image_data:imageData})
+        });
+        const payload=await resp.json();
+        if(!payload.success||!payload.data){
+            throw new Error(payload.error||'分享生成失败');
+        }
+        const shareUrl=String(payload.data.public_url||'').trim();
+        if(!shareUrl)throw new Error('缺少公网分享地址，请联系管理员配置 TALKARENA_PUBLIC_BASE_URL');
+        const qrSrc=`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(shareUrl)}`;
+        _openQrModalResult(qrSrc,shareUrl);
+        return;
+    }catch(e){}
+    try{
+        await navigator.clipboard.writeText(text);
+        alert('二维码生成失败，已复制分享文案');
+    }catch(e){
+        alert(text);
+    }
+}
+
+function saveCurrentReportImage(){
+    try{
+        const data=lastRenderedReportData||{};
+        const imageData=_reportImageDataUrl(data);
+        const a=document.createElement('a');
+        const scene=String(data.scene_name||'TalkArena报告').replace(/[\\/:*?"<>|]/g,'_');
+        const ts=new Date().toISOString().replace(/[:.]/g,'-');
+        a.href=imageData;
+        a.download=`${scene}_${ts}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+    }catch(e){
+        alert('保存图片失败，请重试');
+    }
+}
+function _renderEndLoading(progress=0,stage='正在生成复盘...'){
+    const p=Math.max(0,Math.min(100,Number(progress)||0));
+    $('rc').innerHTML=`
+<div style="max-width:720px;margin:80px auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:28px;box-shadow:0 10px 30px rgba(15,23,42,.08);">
+    <div style="font-size:22px;font-weight:900;color:#0f172a;">复盘生成中</div>
+    <div style="margin-top:8px;font-size:14px;color:#64748b;">${stage}</div>
+    <div style="margin-top:20px;height:12px;background:#e5e7eb;border-radius:999px;overflow:hidden;">
+        <div style="height:100%;width:${p}%;background:linear-gradient(90deg,#2563eb,#7c3aed);transition:width .25s;"></div>
+    </div>
+    <div style="margin-top:10px;font-size:13px;color:#475569;">${Math.round(p)}%</div>
+</div>`;
+}
+function _startEndLoading(){
+    endLoadingProgress=6;
+    _renderEndLoading(endLoadingProgress,'正在整理本局表现...');
+    show('p4');
+    if(endLoadingTimer){clearInterval(endLoadingTimer)}
+    const startAt=Date.now();
+    endLoadingTimer=setInterval(()=>{
+        const elapsed=(Date.now()-startAt)/1000;
+        if(endLoadingProgress<92){
+            endLoadingProgress=Math.min(92,endLoadingProgress+Math.max(1,Math.round((95-endLoadingProgress)/10)));
+            _renderEndLoading(endLoadingProgress,'正在分析对话细节与策略得分...');
+            return;
+        }
+        endLoadingProgress=Math.min(99,endLoadingProgress+0.2);
+        const stage=elapsed>15?'模型正在深度生成复盘，请稍候...':'正在整合报告内容...';
+        _renderEndLoading(endLoadingProgress,stage);
+    },280);
+}
+function _finishEndLoading(){
+    if(endLoadingTimer){clearInterval(endLoadingTimer);endLoadingTimer=null}
+    endLoadingProgress=100;
+    _renderEndLoading(endLoadingProgress,'复盘生成完成');
 }
 
 function getHistoryKey(){
@@ -1245,7 +1585,8 @@ function goBackFromProfile(){
     show(lastPageBeforeProfile||'p1');
 }
 function renderEndReport(data,source='runtime'){
-    const safeData=(data&&typeof data==='object')?data:{};
+    const safeData=normalizeReportData((data&&typeof data==='object')?data:{});
+    lastRenderedReportData=safeData;
     try{
         const html=buildReportHtml(safeData);
         logClient('info','render_end_report_start',{source,scene_name:safeData.scene_name||'',score_keys:Object.keys(safeData.scores||{}),npc_os_count:Array.isArray(safeData.npc_os_list)?safeData.npc_os_list.length:0,html_length:html.length});
@@ -1279,6 +1620,7 @@ async function end(){
     try{
         const endBtn=document.querySelector('.eb');
         if(endBtn)endBtn.disabled=true;
+        _startEndLoading();
         logClient('info','end_clicked',{sid:activeSid});
         const r=await fetch('/api/session/end',{
             method:'POST',
@@ -1294,6 +1636,7 @@ async function end(){
         }
         const data=(d.data&&typeof d.data==='object')?d.data:{};
         logClient('info','end_response_received',{sid:activeSid,scene_name:data.scene_name||'',score_keys:Object.keys(data.scores||{}),npc_os_count:Array.isArray(data.npc_os_list)?data.npc_os_list.length:0});
+        _finishEndLoading();
         renderEndReport(data,'api');
         try{
             saveReportToHistory(data);
@@ -1310,8 +1653,11 @@ async function end(){
             suggestion:'可返回继续对话，或重新开始新会话。',
             scores:{}
         };
+        _finishEndLoading();
         renderEndReport(fallback,'fallback');
     }finally{
+        const endBtn=document.querySelector('.eb');
+        if(endBtn&&sid)endBtn.disabled=false;
         isEndingSession=false;
     }
 }

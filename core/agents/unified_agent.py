@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import time
 from typing import Dict, List, Optional
 
@@ -13,7 +12,7 @@ from .unified_agent_contracts import (
     UnifiedAgentResponse,
     SceneType,
 )
-from ..prompts import get_unified_agent_dialogue_prompt
+from ..prompts.registry import get_unified_agent_dialogue_prompt
 
 logger = logging.getLogger("UnifiedAgent")
 
@@ -221,37 +220,109 @@ class UnifiedAgent:
         )
 
     def _parse_llm_response(self, raw_text: str) -> UnifiedAgentResponse:
-        try:
-            text = raw_text.strip()
-            
-            json_start = text.find("{")
-            json_end = text.rfind("}") + 1
-            
-            if json_start >= 0 and json_end > json_start:
-                json_str = text[json_start:json_end]
-                data = json.loads(json_str)
-                
-                utterances = [
-                    NPCUtterance(
-                        npc_id=u.get("npc_id", ""),
-                        text=u.get("text", ""),
-                        delay_ms=u.get("delay_ms", 700),
-                    )
-                    for u in data.get("utterances", [])
-                ]
-                
-                return UnifiedAgentResponse(
-                    utterances=utterances,
-                    should_await_user=True,
-                    reason=data.get("reason", ""),
-                )
-        except Exception as e:
-            logger.error(f"解析LLM响应失败: {e}")
-        
+        text = (raw_text or "").strip()
+        if not text:
+            raise ValueError("LLM response is empty")
+
+        candidates = self._extract_json_objects(text)
+        if not candidates:
+            candidates = [text]
+
+        parsed_errs: List[str] = []
+        data = None
+        for cand in candidates:
+            try:
+                cand_s = cand.strip()
+                if not cand_s:
+                    continue
+                data = json.loads(cand_s)
+                break
+            except Exception as e:
+                parsed_errs.append(str(e))
+                continue
+        if data is None:
+            raise ValueError(
+                "LLM response JSON parse failed: " + " | ".join(parsed_errs[:3])
+            )
+        if not isinstance(data, dict):
+            raise ValueError("LLM response JSON is not an object")
+
+        if not isinstance(data.get("utterances"), list):
+            raise ValueError("LLM response missing utterances array")
+        utterances = [
+            NPCUtterance(
+                npc_id=u.get("npc_id", ""),
+                text=u.get("text", ""),
+                delay_ms=u.get("delay_ms", 700),
+            )
+            for u in data.get("utterances", [])
+        ]
         return UnifiedAgentResponse(
-            utterances=[],
+            utterances=utterances,
             should_await_user=True,
-            reason="fallback",
+            reason=data.get("reason", ""),
+        )
+
+    def _extract_json_objects(self, text: str) -> List[str]:
+        s = str(text or "")
+        objs: List[str] = []
+        depth = 0
+        in_str = False
+        escaped = False
+        start = -1
+        for i, ch in enumerate(s):
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+                continue
+            if ch == "}":
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        objs.append(s[start : i + 1])
+                        start = -1
+        return objs
+
+    def _build_json_regen_prompt(self, original_prompt: str) -> str:
+        return (
+            "严格按要求重新生成，不要解释，不要代码块，不要前后缀。\n"
+            "只输出一行JSON。\n"
+            "JSON schema:\n"
+            '{"utterances":[{"npc_id":"string","text":"string","delay_ms":1200}],"should_await_user":true,"reason":"string"}\n'
+            "注意：所有字符串必须是合法JSON字符串，内部双引号必须转义。\n\n"
+            f"{original_prompt}"
+        )
+
+    def _build_json_repair_prompt(self, original_prompt: str, bad_output: str, parse_error: str) -> str:
+        return (
+            "You must fix an invalid JSON output.\n"
+            "Return ONLY valid JSON, no markdown, no explanation.\n"
+            "Keep the same schema exactly:\n"
+            "{\n"
+            '  "utterances": [{"npc_id": "string", "text": "string", "delay_ms": 1200}],\n'
+            '  "should_await_user": true,\n'
+            '  "reason": "string"\n'
+            "}\n\n"
+            "Constraints:\n"
+            "- utterances must be a non-empty array.\n"
+            "- Each text must be <= 80 Chinese characters.\n"
+            "- Do not use unescaped double quotes inside JSON strings.\n"
+            "- Ensure strict JSON syntax (double quotes, commas, no trailing commas).\n\n"
+            f"Original generation prompt:\n{original_prompt}\n\n"
+            f"Invalid output:\n{bad_output}\n\n"
+            f"Parser error:\n{parse_error}\n"
         )
 
     def _generate_fallback(
@@ -291,6 +362,10 @@ class UnifiedAgent:
         utterances = []
         num_utterances = min(2 + random.randint(0, 1), len(characters))
         used_chars = []
+        used_texts = set()
+        scene_fallbacks = self.SCENE_FALLBACK_UTTERANCES.get(
+            scenario_id, self.SCENE_FALLBACK_UTTERANCES["shandong_dinner"]
+        )
         
         for i in range(num_utterances):
             available_chars = [c for c in characters if c.name not in used_chars]
@@ -300,11 +375,13 @@ class UnifiedAgent:
             speaker = random.choice(available_chars)
             used_chars.append(speaker.name)
             self.last_spoken[speaker.name] = time.time()
-            
-            scene_fallbacks = self.SCENE_FALLBACK_UTTERANCES.get(
-                scenario_id, self.SCENE_FALLBACK_UTTERANCES["shandong_dinner"]
-            )
-            text = random.choice(scene_fallbacks)
+
+            # Avoid same fallback line being spoken by multiple roles in one round.
+            candidates = [t for t in scene_fallbacks if t not in used_texts]
+            if not candidates:
+                candidates = scene_fallbacks[:]
+            text = random.choice(candidates)
+            used_texts.add(text)
             
             utterances.append(NPCUtterance(
                 npc_id=speaker.name,
@@ -317,6 +394,41 @@ class UnifiedAgent:
             should_await_user=True,
             reason="fallback",
         )
+
+    def _dedupe_round_utterances(self, scenario_id: str, utterances: List[NPCUtterance]) -> List[NPCUtterance]:
+        if not utterances:
+            return utterances
+        scene_fallbacks = self.SCENE_FALLBACK_UTTERANCES.get(
+            scenario_id, self.SCENE_FALLBACK_UTTERANCES["shandong_dinner"]
+        )
+        used = set()
+        out: List[NPCUtterance] = []
+        for u in utterances:
+            txt = (u.text or "").strip()
+            if txt and txt in used:
+                candidates = [t for t in scene_fallbacks if t not in used]
+                if candidates:
+                    txt = random.choice(candidates)
+            if txt:
+                used.add(txt)
+            out.append(
+                NPCUtterance(
+                    npc_id=u.npc_id,
+                    text=txt or u.text,
+                    delay_ms=u.delay_ms,
+                )
+            )
+        return out
+
+    def _assert_no_duplicate_utterances(self, utterances: List[NPCUtterance]) -> None:
+        seen = set()
+        for u in utterances or []:
+            txt = (u.text or "").strip()
+            if not txt:
+                continue
+            if txt in seen:
+                raise RuntimeError("UnifiedAgent generated duplicate utterances in one round; fallback disabled.")
+            seen.add(txt)
 
     def process(
         self,
@@ -341,27 +453,34 @@ class UnifiedAgent:
                     is_user=h.get("is_user", False),
                 ))
         
-        if self.llm:
+        if not self.llm:
+            raise RuntimeError("UnifiedAgent requires an available LLM; fallback disabled.")
+
+        prompt = self._build_prompt(
+            scenario_id=scenario_id,
+            user_input=user_input,
+            characters=characters,
+            history=history,
+            is_interrupt=is_interrupt,
+            pressure_tags=pressure_tags or [],
+            pressure_value=pressure_value or 5,
+            drinking_capacity=drinking_capacity or 0,
+        )
+        response = self.llm.generate(prompt, max_new_tokens=220, temperature=0.45)
+        try:
+            result = self._parse_llm_response(response)
+        except Exception as parse_err:
+            regen_prompt = self._build_json_regen_prompt(prompt)
+            regenerated = self.llm.generate(regen_prompt, max_new_tokens=220, temperature=0.2)
             try:
-                prompt = self._build_prompt(
-                    scenario_id=scenario_id,
-                    user_input=user_input,
-                    characters=characters,
-                    history=history,
-                    is_interrupt=is_interrupt,
-                    pressure_tags=pressure_tags or [],
-                    pressure_value=pressure_value or 5,
-                    drinking_capacity=drinking_capacity or 0,
-                )
-                
-                response = self.llm.generate(prompt, max_new_tokens=260, temperature=0.7)
-                result = self._parse_llm_response(response)
-                
-                if result.utterances:
-                    for u in result.utterances:
-                        self.last_spoken[u.npc_id] = time.time()
-                    return result
-            except Exception as e:
-                logger.error(f"UnifiedAgent LLM调用失败: {e}")
-        
-        return self._generate_fallback(scenario_id, characters, user_input, history)
+                result = self._parse_llm_response(regenerated)
+            except Exception as regen_err:
+                repair_prompt = self._build_json_repair_prompt(prompt, regenerated or response, str(regen_err))
+                repaired = self.llm.generate(repair_prompt, max_new_tokens=260, temperature=0.1)
+                result = self._parse_llm_response(repaired)
+        if not result.utterances:
+            raise RuntimeError("UnifiedAgent returned empty utterances; fallback disabled.")
+        self._assert_no_duplicate_utterances(result.utterances)
+        for u in result.utterances:
+            self.last_spoken[u.npc_id] = time.time()
+        return result

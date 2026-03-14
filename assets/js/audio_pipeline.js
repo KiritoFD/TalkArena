@@ -181,6 +181,18 @@ let recordSampleRate=44100;
 
 function setMicStatus(text){const el=$('micStatus');if(el)el.textContent=text}
 function setVoiceEmotion(text){const el=$('voiceEmotion');if(el)el.textContent=`语音情感: ${text||'--'}`}
+function setInputTranscribing(on){
+    const input=$('ci2');
+    if(!input)return;
+    if(on){
+        if(!input.dataset.prevPlaceholder)input.dataset.prevPlaceholder=input.placeholder||'输入消息...';
+        input.placeholder='转写中…';
+        input.disabled=true;
+    }else{
+        input.disabled=false;
+        input.placeholder=input.dataset.prevPlaceholder||'输入消息...';
+    }
+}
 
 function downsampleBuffer(buffer, inRate, outRate){
     if(outRate===inRate)return buffer;
@@ -262,16 +274,19 @@ async function toggleM2(){
         if(b)b.textContent='🎤 开始录音';
         if(b)b.classList.remove('on');
         if(micButton)micButton.classList.remove('active');
-        setMicStatus('正在识别...');
+        setMicStatus('转写中...');
+        setInputTranscribing(true);
         const wavBlob=await stopLocalRecording();
         if(wavBlob){
             if((Date.now()-recordingStart)<450){
                 setMicStatus('录音过短，请至少说半秒');
+                setInputTranscribing(false);
                 return;
             }
             await submitLocalSTT(wavBlob);
         }else{
             setMicStatus('未采集到音频');
+            setInputTranscribing(false);
         }
         return;
     }
@@ -310,6 +325,8 @@ async function submitLocalSTT(wavBlob){
         }
     }catch(e){
         setMicStatus('识别失败: '+(e.message||'网络错误'));
+    }finally{
+        setInputTranscribing(false);
     }
 }
 

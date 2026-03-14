@@ -42,7 +42,6 @@ from .registry import (
     get_duel_summary_prompt,
     get_unified_agent_dialogue_prompt,
     get_scene_system_prompt,
-    get_rescue_master_fallback_prompt,
 )
 
 __all__ = [
@@ -77,5 +76,4 @@ __all__ = [
     "get_duel_summary_prompt",
     "get_unified_agent_dialogue_prompt",
     "get_scene_system_prompt",
-    "get_rescue_master_fallback_prompt",
 ]
