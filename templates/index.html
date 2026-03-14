@@ -959,12 +959,24 @@ function playNextNpcAudio(){
     npcAudio.onerror=()=>{npcAudioPlaying=false;playNextNpcAudio()};
     npcAudio.play().catch(()=>{npcAudioPlaying=false;playNextNpcAudio()});
 }
-async function speakNPC(text,emotion){
+async function speakNPC(text,emotion,speaker){
     if(!npcVoiceEnabled)return;
     const clean=String(text||'').replace(/^\s*[^：:]{1,6}[：:]\s*/,'').trim();
     if(!clean)return;
+    const speakerProfile=(chars||[]).find(c=>(c.n||c.name||'')===speaker)||null;
     try{
-        const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:clean,emotion:emotion||'neutral'})});
+        const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+            text:clean,
+            emotion:emotion||'neutral',
+            speaker:speaker||'',
+            speaker_profile:speakerProfile?{
+                name:speakerProfile.n||speakerProfile.name||'',
+                role:speakerProfile.r||speakerProfile.role||'',
+                gender:speakerProfile.gender||speakerProfile.sex||'',
+                age:speakerProfile.age||null,
+                age_group:speakerProfile.ageGroup||speakerProfile.age_group||''
+            }:null
+        })});
         const d=await r.json();
         if(d.success&&d.data&&d.data.url){
             queueNpcAudio(d.data.url);
@@ -1852,7 +1864,7 @@ function addBotStreaming(t,sp,emo){
         renderConversationState('idle');
     }
     
-    speakNPC(t, detectEmotionLabel(t));
+    speakNPC(t, detectEmotionLabel(t), speaker);
     const mco=document.querySelector(`#${msgId} .mco`);
     let idx=0;
     return new Promise((resolve)=>{
