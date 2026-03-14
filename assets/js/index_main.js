@@ -18,6 +18,7 @@ let pendingEndTimeout=null;
 let endLoadingTimer=null;
 let endLoadingProgress=0;
 let lastRenderedReportData=null;
+let reportShowTranscript=false;
 const pool={
 "家庭饭桌试炼":{id:"shandong_dinner",icon:"🍜",members:[
 {a:"👴",n:"大舅",r:"主陪·长辈",b:"看重礼数与体面，善于在热闹中施压",gender:"male",age_group:"elder",identity:"senior",tts_role:"charles"},
@@ -1227,8 +1228,11 @@ function buildReportHtml(data){
             <p style="margin:0;font-size:14px;line-height:1.8;color:#334155;white-space:pre-wrap;">${safeData.suggestion||'继续保持稳定表达，逐步提升场景适配度。'}</p>
         </div>
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:20px;">
-            <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">对话全程文本</h3>
-            <div style="max-height:320px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <h3 style="margin:0 0 10px;font-size:18px;color:#0f172a;">对话全程文本</h3>
+                <button class="view-btn" id="toggleTranscriptBtn" onclick="toggleReportTranscript()" style="padding:6px 10px;">${reportShowTranscript?'隐藏':'显示'}</button>
+            </div>
+            <div id="reportTranscriptWrap" style="max-height:320px;overflow:auto;background:#f8fafc;border-radius:12px;padding:12px;border:1px solid #e2e8f0;display:${reportShowTranscript?'block':'none'};">
                 ${transcript.length?`<pre style="margin:0;white-space:pre-wrap;line-height:1.7;font-size:13px;color:#334155;">${_escapeHtml(transcript.map(x=>String(x)).join('\n'))}</pre>`:'<div style="font-size:13px;color:#64748b;">暂无对话文本</div>'}
             </div>
         </div>
@@ -1239,6 +1243,14 @@ function buildReportHtml(data){
         </div>
     </section>
 </div>`;
+}
+
+function toggleReportTranscript(){
+    reportShowTranscript=!reportShowTranscript;
+    const wrap=$('reportTranscriptWrap');
+    const btn=$('toggleTranscriptBtn');
+    if(wrap)wrap.style.display=reportShowTranscript?'block':'none';
+    if(btn)btn.textContent=reportShowTranscript?'隐藏':'显示';
 }
 
 function _buildShareText(data){
@@ -1278,10 +1290,11 @@ function _reportImageDataUrl(data){
     const npcList=Array.isArray(d.npc_os_list)?d.npc_os_list:[];
     const transcript=Array.isArray(d.transcript)?d.transcript:[];
     const transcriptText=transcript.length?transcript.join('\n'):'暂无对话文本';
-    const estimatedTranscriptLines=Math.max(3,Math.ceil(transcriptText.length/40)+transcript.length);
+    const includeTranscript=!!reportShowTranscript;
+    const estimatedTranscriptLines=includeTranscript?Math.max(3,Math.ceil(transcriptText.length/40)+transcript.length):0;
     const canvas=document.createElement('canvas');
     canvas.width=1080;
-    canvas.height=Math.max(1840,1840 + (estimatedTranscriptLines-8)*24);
+    canvas.height=Math.max(1840,1840 + (estimatedTranscriptLines>0?(estimatedTranscriptLines-8)*24:0));
     const ctx=canvas.getContext('2d');
     ctx.fillStyle='#f8fafc';
     ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -1403,7 +1416,9 @@ function _reportImageDataUrl(data){
         const txt=npcList.map(n=>`${n.name||'NPC'}：${n.content||n.os||n.thought||'暂无反馈'}`).join('\n');
         block('NPC 内心 OS',txt);
     }
-    block('对话全程文本',transcriptText);
+    if(includeTranscript){
+        block('对话全程文本',transcriptText);
+    }
     ctx.fillStyle='#94a3b8';
     ctx.font='20px sans-serif';
     ctx.fillText(`生成时间：${new Date().toLocaleString()}`,90,canvas.height-70);
