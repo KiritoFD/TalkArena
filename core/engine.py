@@ -9,6 +9,7 @@ from typing import Any, Dict, Generator, List, Optional
 import logging
 import uuid
 import time
+import os
 
 logger = logging.getLogger("TalkArena")
 
@@ -26,6 +27,12 @@ def _to_score(value: Any, default: float = 50) -> float:
         return score
     except (TypeError, ValueError):
         return float(default)
+
+
+def _report_score_map(value: Any, default: float = 50) -> float:
+    """Map 0-100 raw score linearly to 30-100 for report presentation."""
+    base = _to_score(value, default)
+    return 30.0 + base * 0.7
 
 
 def _scene_rescue_fallbacks(scenario_id: str) -> List[str]:
@@ -52,6 +59,48 @@ def _scene_rescue_fallbacks(scenario_id: str) -> List[str]:
         ],
     }
     return pools.get(scenario_id, pools["shandong_dinner"])
+
+
+def _next_unified_dominance(
+    prev: Dict[str, Any],
+    user_input: str,
+    multimodal: Dict[str, Any],
+    utterance_count: int,
+) -> Dict[str, int]:
+    """Lightweight dominance update for unified-agent path (zero-sum 100)."""
+    user_prev = int((prev or {}).get("user", 50) or 50)
+    emo = ((multimodal or {}).get("emotion") or {}) if isinstance(multimodal, dict) else {}
+    confidence = int(emo.get("confidence", 50) or 50)
+    calm = int(emo.get("calm", 50) or 50)
+    focus = int(emo.get("focus", 50) or 50)
+    nervous = int(emo.get("nervous", 20) or 20)
+
+    text = str(user_input or "").strip()
+    text_bonus = 0
+    if text:
+        text_bonus = min(5, max(0, len(text) // 18))
+        if "?" in text or "？" in text:
+            text_bonus += 1
+        if "!" in text or "！" in text:
+            text_bonus += 1
+
+    # More NPC lines means more pressure from AI side.
+    npc_pressure = min(4, max(1, int(utterance_count or 0) - 1))
+    emotion_signal = int(
+        round(
+            (confidence - 50) * 0.18
+            + (focus - 50) * 0.14
+            + (calm - 50) * 0.08
+            - (nervous - 20) * 0.16
+        )
+    )
+    delta = max(-12, min(12, emotion_signal + text_bonus - npc_pressure))
+    if text and delta == 0:
+        delta = 1 if (confidence + focus) >= (nervous + 80) else -1
+
+    user_new = max(10, min(90, user_prev + delta))
+    ai_new = 100 - user_new
+    return {"user": int(user_new), "ai": int(ai_new)}
 
 
 @dataclass
@@ -240,6 +289,21 @@ class TalkArenaEngine:
                 )
 
             session["turn_count"] += 1
+            old_dom = dict(session.get("dominance", {"user": 50, "ai": 50}) or {"user": 50, "ai": 50})
+            session["dominance"] = _next_unified_dominance(
+                old_dom,
+                user_input=user_input,
+                multimodal=multimodal or {},
+                utterance_count=len(result.utterances or []),
+            )
+            logger.info(
+                "[UnifiedDominance] user=%s->%s ai=%s->%s utterances=%s",
+                old_dom.get("user", 50),
+                session["dominance"].get("user", 50),
+                old_dom.get("ai", 50),
+                session["dominance"].get("ai", 50),
+                len(result.utterances or []),
+            )
 
             yield ProcessResult(
                 "complete",
@@ -247,6 +311,7 @@ class TalkArenaEngine:
                     "utterances": utterances_data,
                     "should_await_user": result.should_await_user,
                     "reason": result.reason,
+                    "new_dominance": session["dominance"],
                     "is_unified_agent": True,
                 },
             )
@@ -487,26 +552,29 @@ class TalkArenaEngine:
             medal_score = 70
 
         # 1. 生成五维度评分（strict: no fallback）
+        report_scores_max_tokens = int(os.getenv("REPORT_SCORES_MAX_TOKENS", "220"))
+        report_summary_max_tokens = int(os.getenv("REPORT_SUMMARY_MAX_TOKENS", "320"))
+        report_npc_max_tokens = int(os.getenv("REPORT_NPC_MAX_TOKENS", "420"))
         scores_prompt = get_report_scores_prompt(
             scene_name=scene_name,
             npc_list=json.dumps(npc_list, ensure_ascii=False),
             history_log=history_for_model,
         )
-        scores_result = _llm_generate_with_retry(scores_prompt, max_new_tokens=220, temperature=0.4)
+        scores_result = _llm_generate_with_retry(scores_prompt, max_new_tokens=report_scores_max_tokens, temperature=0.4)
         scores_data = _extract_json_obj(scores_result)
         metrics_raw = scores_data.get("metrics", {})
         if not isinstance(metrics_raw, dict):
             raise ValueError("report scores payload missing 'metrics' dict")
         metrics = {
-            "oily": _to_score(metrics_raw.get("oily")),
-            "friendliness": _to_score(metrics_raw.get("friendliness")),
-            "logic": _to_score(metrics_raw.get("logic")),
-            "humor": _to_score(metrics_raw.get("humor")),
-            "respect": _to_score(metrics_raw.get("respect")),
+            "oily": _report_score_map(metrics_raw.get("oily")),
+            "friendliness": _report_score_map(metrics_raw.get("friendliness")),
+            "logic": _report_score_map(metrics_raw.get("logic")),
+            "humor": _report_score_map(metrics_raw.get("humor")),
+            "respect": _report_score_map(metrics_raw.get("respect")),
         }
 
         # 2. 计算总分和勋章
-        total_score = sum(metrics.values()) / len(metrics) if metrics else 50
+        total_score = sum(metrics.values()) / len(metrics) if metrics else _report_score_map(50)
         medal = self._determine_medal(total_score)
 
         # 3. 生成综合点评（strict: no fallback）
@@ -516,7 +584,7 @@ class TalkArenaEngine:
             history_log=history_for_model,
             medal=self._get_medal_name(medal),
         )
-        summary = _llm_generate_with_retry(summary_prompt, max_new_tokens=320, temperature=0.6)
+        summary = _llm_generate_with_retry(summary_prompt, max_new_tokens=report_summary_max_tokens, temperature=0.6)
         if not str(summary or "").strip():
             raise ValueError("empty report summary")
 
@@ -527,7 +595,7 @@ class TalkArenaEngine:
             history_log=history_for_model,
             medal=self._get_medal_name(medal),
         )
-        npc_result = _llm_generate_with_retry(npc_prompt, max_new_tokens=420, temperature=0.6)
+        npc_result = _llm_generate_with_retry(npc_prompt, max_new_tokens=report_npc_max_tokens, temperature=0.6)
         npc_data = _extract_json_obj(npc_result)
         npc_os_list = npc_data.get("npc_inner_voice", [])
         suggestion = npc_data.get("high_light_suggestion", "")

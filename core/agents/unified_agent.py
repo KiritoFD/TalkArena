@@ -561,6 +561,9 @@ class UnifiedAgent:
             pressure_value=pressure_value or 5,
             drinking_capacity=drinking_capacity or 0,
         )
+        structured_max_tokens = int(os.getenv("UNIFIED_STRUCTURED_MAX_TOKENS", "420"))
+        text_max_tokens = int(os.getenv("UNIFIED_TEXT_MAX_TOKENS", "360"))
+        repair_max_tokens = int(os.getenv("UNIFIED_REPAIR_MAX_TOKENS", "420"))
 
         # Path A: structured output first (best robustness).
         try:
@@ -571,7 +574,7 @@ class UnifiedAgent:
             ).strip()
             response = self._generate_structured_json(
                 prompt,
-                max_new_tokens=420,
+                max_new_tokens=structured_max_tokens,
                 temperature=0.2,
                 model_override=stable_model,
             )
@@ -583,19 +586,19 @@ class UnifiedAgent:
         except Exception as structured_err:
             logger.warning("UnifiedAgent structured output failed, fallback to text parsing: %s", structured_err)
             # Path B/C/D: strict text generation + regeneration + repair.
-            response = self.llm.generate(prompt, max_new_tokens=360, temperature=0.45)
+            response = self.llm.generate(prompt, max_new_tokens=text_max_tokens, temperature=0.45)
             try:
                 result = self._parse_llm_response(response)
             except Exception as parse_err:
                 self._debug_log_raw_response("text_primary", response, parse_err)
                 regen_prompt = self._build_json_regen_prompt(prompt)
-                regenerated = self.llm.generate(regen_prompt, max_new_tokens=360, temperature=0.2)
+                regenerated = self.llm.generate(regen_prompt, max_new_tokens=text_max_tokens, temperature=0.2)
                 try:
                     result = self._parse_llm_response(regenerated)
                 except Exception as regen_err:
                     self._debug_log_raw_response("text_regen", regenerated, regen_err)
                     repair_prompt = self._build_json_repair_prompt(prompt, regenerated or response, str(regen_err))
-                    repaired = self.llm.generate(repair_prompt, max_new_tokens=420, temperature=0.1)
+                    repaired = self.llm.generate(repair_prompt, max_new_tokens=repair_max_tokens, temperature=0.1)
                     try:
                         result = self._parse_llm_response(repaired)
                     except Exception as repair_err:

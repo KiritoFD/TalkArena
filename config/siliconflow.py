@@ -18,6 +18,8 @@ class SiliconFlowConfig:
     base_url_default: str = "https://api.siliconflow.cn/v1"
 
     llm_model_default: str = "deepseek-ai/DeepSeek-V3.2"
+    llm_model_fast_default: str = "Pro/Qwen/Qwen2.5-7B-Instruct"
+    llm_structured_fast_default: str = "Pro/THUDM/glm-4-9b-chat"
     stt_model_default: str = "TeleAI/TeleSpeechASR"
 
     # Prefer Chinese-focused TTS by default.

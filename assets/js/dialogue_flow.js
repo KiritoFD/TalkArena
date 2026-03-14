@@ -136,7 +136,7 @@ if(scene === '群面竞争场'){
 
 try{
 const apiT0=performance.now();
-const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:sceneDescription,user_info:(window.userInfo||null),pressure_tags:selectedPressureTags,pressure_value:pressureValue,drinking_capacity:drinkingCapacity})});
+const r=await fetch('/api/session/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario_id:selectedScenarioId,scene_name:scene,characters:chars,scene_description:sceneDescription,user_info:(window.userInfo||null),pressure_tags:selectedPressureTags,pressure_value:pressureValue,drinking_capacity:drinkingCapacity,fast_mode:!!window.fastModeEnabled})});
 const d=await r.json();
 console.log(`[StartFlow] api_session_start_done cost_ms=${Math.round(performance.now()-apiT0)} total_ms=${Math.round(performance.now()-startT0)} meta=`,d.meta||{});
 if(!d.success){alert(d.error);return}
@@ -194,7 +194,7 @@ await unlockNpcAudio();
 const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 _setLlmBusy(true,'时间暂停，众人思考中');
-try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal,chat_history:buildChatHistoryPayload(),scenario_id:selectedScenarioId,scene_name:scene,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),characters:chars})});
+try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal,chat_history:buildChatHistoryPayload(),scenario_id:selectedScenarioId,scene_name:scene,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),characters:chars,fast_mode:!!window.fastModeEnabled})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
     window.__lastChatResponseAt=performance.now();
     if(d.data.utterances){

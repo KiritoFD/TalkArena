@@ -61,6 +61,7 @@ engine = None
 mm_analyzer = None
 stt_service = None
 tts_service = None
+runtime_mode_state = {"fast_mode": False}
 AUDIO_OUTPUT_DIR = Path(tempfile.gettempdir()) / "talkarena_audio"
 TTS_FIXED_CACHE_MAX_ITEMS = int(os.getenv("TTS_FIXED_CACHE_MAX_ITEMS", "256"))
 TTS_FIXED_AUDIO_CACHE: "OrderedDict[str, str]" = OrderedDict()
@@ -190,6 +191,62 @@ def _truthy_env(name: str, default: str = "1") -> bool:
     return (os.getenv(name, default) or default).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _fast_mode_enabled() -> bool:
+    return _truthy_env("TALKARENA_FAST_MODE", "1")
+
+
+def _set_runtime_mode(fast_mode: bool, reason: str = "") -> None:
+    fast = bool(fast_mode)
+    runtime_mode_state["fast_mode"] = fast
+    os.environ["TALKARENA_FAST_MODE"] = "1" if fast else "0"
+
+    llm_model = (
+        SILICONFLOW_CONFIG.llm_model_fast_default
+        if fast
+        else SILICONFLOW_CONFIG.llm_model_default
+    )
+    structured_model = (
+        SILICONFLOW_CONFIG.llm_structured_fast_default
+        if fast
+        else os.getenv("SILICONFLOW_STRUCTURED_MODEL_NORMAL", SILICONFLOW_CONFIG.llm_model_default)
+    )
+    stable_model = (
+        SILICONFLOW_CONFIG.llm_model_fast_default
+        if fast
+        else SILICONFLOW_CONFIG.llm_model_default
+    )
+    os.environ["LLM_MODEL"] = llm_model
+    os.environ["SILICONFLOW_LLM_MODEL"] = llm_model
+    os.environ["SILICONFLOW_STRUCTURED_MODEL"] = structured_model
+    os.environ["SILICONFLOW_STABLE_LLM_MODEL"] = stable_model
+
+    if fast:
+        os.environ["UNIFIED_STRUCTURED_MAX_TOKENS"] = "260"
+        os.environ["UNIFIED_TEXT_MAX_TOKENS"] = "220"
+        os.environ["UNIFIED_REPAIR_MAX_TOKENS"] = "260"
+        os.environ["REPORT_SCORES_MAX_TOKENS"] = "160"
+        os.environ["REPORT_SUMMARY_MAX_TOKENS"] = "220"
+        os.environ["REPORT_NPC_MAX_TOKENS"] = "300"
+    else:
+        os.environ["UNIFIED_STRUCTURED_MAX_TOKENS"] = "420"
+        os.environ["UNIFIED_TEXT_MAX_TOKENS"] = "360"
+        os.environ["UNIFIED_REPAIR_MAX_TOKENS"] = "420"
+        os.environ["REPORT_SCORES_MAX_TOKENS"] = "220"
+        os.environ["REPORT_SUMMARY_MAX_TOKENS"] = "320"
+        os.environ["REPORT_NPC_MAX_TOKENS"] = "420"
+
+    global engine
+    try:
+        if engine is not None and hasattr(engine, "llm") and engine.llm is not None:
+            engine.llm.model_name = llm_model
+    except Exception as e:
+        print(f"[LLMMode] runtime switch failed: {e}")
+    print(
+        f"[LLMMode] apply fast_mode={fast} reason={reason or 'runtime'} "
+        f"llm_model={llm_model} structured_model={structured_model} stable_model={stable_model}"
+    )
+
+
 def _siliconflow_api_key() -> str:
     return siliconflow_api_key()
 
@@ -200,12 +257,29 @@ def _siliconflow_base_url() -> str:
 
 def _ensure_llm_env_defaults() -> None:
     # Configure LLM defaults for SiliconFlow only when the user did not set explicit values.
+    fast_mode = _fast_mode_enabled()
     if not os.getenv("LLM_API_KEYS") and not os.getenv("LLM_API_KEY") and not os.getenv("OPENAI_API_KEY"):
         os.environ["LLM_API_KEY"] = _siliconflow_api_key()
     if not os.getenv("LLM_MODEL") and not os.getenv("LLM_MODELS"):
-        os.environ["LLM_MODEL"] = os.getenv("SILICONFLOW_LLM_MODEL", SILICONFLOW_CONFIG.llm_model_default)
+        default_model = (
+            SILICONFLOW_CONFIG.llm_model_fast_default
+            if fast_mode
+            else SILICONFLOW_CONFIG.llm_model_default
+        )
+        os.environ["LLM_MODEL"] = os.getenv("SILICONFLOW_LLM_MODEL", default_model)
+    if fast_mode and not os.getenv("SILICONFLOW_STRUCTURED_MODEL"):
+        os.environ["SILICONFLOW_STRUCTURED_MODEL"] = os.getenv(
+            "SILICONFLOW_FAST_STRUCTURED_MODEL",
+            SILICONFLOW_CONFIG.llm_structured_fast_default,
+        )
+    if fast_mode and not os.getenv("SILICONFLOW_STABLE_LLM_MODEL"):
+        os.environ["SILICONFLOW_STABLE_LLM_MODEL"] = os.getenv(
+            "SILICONFLOW_FAST_STABLE_MODEL",
+            SILICONFLOW_CONFIG.llm_model_fast_default,
+        )
     if not os.getenv("LLM_BASE_URL") and not os.getenv("LLM_BASE_URLS"):
         os.environ["LLM_BASE_URL"] = _siliconflow_base_url()
+    _set_runtime_mode(fast_mode, reason="bootstrap")
 
 
 class SiliconFlowSTTService:
@@ -559,6 +633,11 @@ def get_engine():
 
         llm = LLMLoader()
         llm.load()
+        print(
+            f"[LLMMode] fast_mode={_fast_mode_enabled()} "
+            f"structured_model={os.getenv('SILICONFLOW_STRUCTURED_MODEL','')} "
+            f"stable_model={os.getenv('SILICONFLOW_STABLE_LLM_MODEL','')}"
+        )
         print(f"[LLM] provider={llm.provider} model={llm.model_name} base_url={llm.base_url}")
         # TTS is provided by SiliconFlow API routes in this service.
         # Disable legacy local TTSLoader bootstrap (edge_tts dependency).
@@ -639,6 +718,7 @@ class ChatReq(BaseModel):
     scene_name: Optional[str] = None
     scene_description: Optional[str] = None
     characters: Optional[List[Dict]] = None
+    fast_mode: Optional[bool] = None
 
 
 class SessionReq(BaseModel):
@@ -650,6 +730,7 @@ class SessionReq(BaseModel):
     pressure_tags: Optional[List[str]] = []
     pressure_value: Optional[int] = 5
     drinking_capacity: Optional[int] = 0
+    fast_mode: Optional[bool] = None
 
 
 class MMReq(BaseModel):
@@ -1350,8 +1431,10 @@ async def start_session(req: SessionReq):
     print(
         "[SessionStart] begin "
         f"scenario_id={req.scenario_id} scene_name={req.scene_name} "
-        f"chars={len(req.characters or [])}"
+        f"chars={len(req.characters or [])} fast_mode={req.fast_mode}"
     )
+    if req.fast_mode is not None:
+        _set_runtime_mode(bool(req.fast_mode), reason="session_start_request")
     try:
         eng = get_engine()
     except Exception as e:
@@ -1493,6 +1576,8 @@ async def send_msg(req: ChatReq):
         return {"success": False, "error": "参数错误"}
 
     try:
+        if req.fast_mode is not None:
+            _set_runtime_mode(bool(req.fast_mode), reason="chat_send_request")
         eng = get_engine()
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1537,9 +1622,11 @@ async def send_msg(req: ChatReq):
                 with_tts_url = 0
                 if isinstance(utterances, list):
                     with_tts_url = sum(1 for u in utterances if isinstance(u, dict) and str(u.get("tts_url") or "").strip())
+                dom = payload.get("new_dominance") if isinstance(payload, dict) else None
                 print(
                     "[ChatSend] complete "
                     f"sid={req.session_id} utterances={utter_count} with_tts_url={with_tts_url} "
+                    f"dominance={dom} "
                     f"llm_total_ms={int((time.perf_counter() - llm_t0) * 1000)} "
                     f"api_total_ms={int((time.perf_counter() - req_t0) * 1000)} "
                     f"mm_ms={mm_latency_ms}"
