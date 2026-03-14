@@ -18,7 +18,7 @@ class SiliconFlowConfig:
     base_url_default: str = "https://api.siliconflow.cn/v1"
 
     llm_model_default: str = "deepseek-ai/DeepSeek-V3.2"
-    stt_model_default: str = "FunAudioLLM/SenseVoiceSmall"
+    stt_model_default: str = "TeleAI/TeleSpeechASR"
 
     # Prefer Chinese-focused TTS by default.
     tts_model_default: str = "fnlp/MOSS-TTSD-v0.5"

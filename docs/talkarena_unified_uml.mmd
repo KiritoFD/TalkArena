@@ -1,0 +1,63 @@
+flowchart LR
+  subgraph L1[体验层 Frontend]
+    UI[页面与交互 UI]
+    FLOW[对话编排 dialogue_flow.js]
+    AUDIO[音频管线 audio_pipeline.js]
+    FACE[前端表情识别 emoji]
+    EMO[情绪数据 emotionData]
+  end
+
+  subgraph L2[应用层 FastAPI]
+    SESSION[Session APIs start interrupt continue end]
+    CHAT[Chat APIs send rescue]
+    VOICE[Voice APIs tts stt]
+    SHARE[Share APIs report image qr]
+  end
+
+  subgraph L3[运行时编排层]
+    ENGINE[TalkArenaEngine]
+    RES[Session Resilience snapshot rehydrate]
+  end
+
+  subgraph L4[智能核心层]
+    AGENT[UnifiedAgent]
+    PROMPT[Prompt Registry]
+    VALIDATOR[Output Validator]
+    REPORT[Report Generator]
+  end
+
+  subgraph L5[模型网关层]
+    LLMGW[LLM Gateway DeepSeek V3.2]
+    TTSGW[TTS Gateway MOSS TTSD]
+    STTGW[STT Gateway TeleSpeechASR]
+  end
+
+  subgraph L6[外部平台]
+    SILICON[SiliconFlow APIs]
+    IMGHOST[Image Hosting]
+  end
+
+  UI --> FLOW
+  UI --> AUDIO
+  UI --> FACE --> EMO
+  EMO --> CHAT
+  FLOW --> CHAT
+  AUDIO --> VOICE
+
+  SESSION --> ENGINE
+  CHAT --> ENGINE
+  ENGINE --> AGENT
+  AGENT --> PROMPT
+  AGENT --> VALIDATOR
+  ENGINE --> REPORT
+  ENGINE --> RES
+
+  CHAT --> LLMGW
+  REPORT --> LLMGW
+  VOICE --> TTSGW
+  VOICE --> STTGW
+
+  LLMGW --> SILICON
+  TTSGW --> SILICON
+  STTGW --> SILICON
+  SHARE --> IMGHOST
