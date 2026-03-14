@@ -761,12 +761,17 @@ if MULTIPART_AVAILABLE:
                 else:
                     raise
 
-            analyzer = get_mm_analyzer()
-            mm_result = analyzer.analyze_multimodal(
-                text=result.get("text", ""),
-                emotion_features=None,
-                voice_features=result.get("voice_features"),
-            )
+            mm_result = {}
+            try:
+                analyzer = get_mm_analyzer()
+                mm_result = analyzer.analyze_multimodal(
+                    text=result.get("text", ""),
+                    emotion_features=None,
+                    voice_features=result.get("voice_features"),
+                ) or {}
+            except Exception as mm_err:
+                # STT text should still be usable even when multimodal dependencies are unavailable.
+                print(f"[STT] multimodal analyze skipped: {mm_err}")
             return {
                 "success": True,
                 "data": {

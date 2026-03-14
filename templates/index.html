@@ -2403,12 +2403,19 @@ async function toggleM2(){
         if(micButton)micButton.classList.remove('active');
         setMicStatus('正在识别...');
         const wavBlob=await stopLocalRecording();
-        if(wavBlob)await submitLocalSTT(wavBlob);
+        if(wavBlob){
+            if((Date.now()-recordingStart)<450){
+                setMicStatus('录音过短，请至少说半秒');
+                return;
+            }
+            await submitLocalSTT(wavBlob);
+        }else{
+            setMicStatus('未采集到音频');
+        }
         return;
     }
     try{
-        const constraints={audio:true};
-        if(micId)constraints.deviceId={exact:micId};
+        const constraints={audio: micId ? {deviceId:{exact:micId}} : true};
         micStream=await navigator.mediaDevices.getUserMedia(constraints);
         isM=1;
         if(b)b.textContent='⏹️ 停止录音';
@@ -2438,10 +2445,10 @@ async function submitLocalSTT(wavBlob){
             setVoiceEmotion(emo);
             setMicStatus('识别完成');
         }else{
-            setMicStatus('识别失败');
+            setMicStatus('识别失败: '+(d.error||'未知错误'));
         }
     }catch(e){
-        setMicStatus('识别失败');
+        setMicStatus('识别失败: '+(e.message||'网络错误'));
     }
 }
 function updateMetrics(scores){console.log('[Metrics] 收到分数:', scores);if(scores){const total=Math.round((scores.emotional_intelligence+scores.response_quality+scores.pressure_handling+scores.cultural_fit)/4);$('val-score').textContent=total;$('bar-score').style.width=total+'%'}else{console.log('[Metrics] 分数为空')}}
