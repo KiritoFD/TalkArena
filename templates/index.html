@@ -10,54 +10,53 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .page{display:none;width:100%;min-height:100vh}
 .page.active{display:flex;flex-direction:column}
 
-#p1{justify-content:center;align-items:center;padding:20px}
-.hero{background:#fff;border:4px solid #C8102E;border-radius:20px;padding:40px 60px;max-width:700px;box-shadow:0 10px 40px rgba(200,16,46,.2);text-align:center}
+#p1{justify-content:flex-start;align-items:center;padding:18px}
+.hero{background:#fff;border:4px solid #C8102E;border-radius:20px;padding:26px 32px 20px;max-width:940px;width:100%;box-shadow:0 10px 40px rgba(200,16,46,.2);text-align:center}
 .logo{font-size:48px;margin-bottom:10px}
 .title{color:#C8102E;font-size:36px;font-weight:900;letter-spacing:3px}
-.sub{color:#8B0000;font-size:16px;margin:10px 0 25px}
+.sub{color:#8B0000;font-size:16px;margin:8px 0 16px}
 
-.tech-badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:20px 0}
-.badge{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff;padding:6px 14px;border-radius:20px;font-size:12px;font-weight:600}
-.badge.rag{background:linear-gradient(135deg,#11998e 0%,#38ef7d 100%)}
-.badge.decision{background:linear-gradient(135deg,#ee0979 0%,#ff6a00 100%)}
-.badge.validator{background:linear-gradient(135deg,#4776E6 0%,#8E54E9 100%)}
-
-.features{text-align:left;margin:25px 0;background:#f8f9fa;padding:20px;border-radius:12px}
-.fi{margin:12px 0;padding-left:15px;border-left:3px solid #C8102E;font-size:14px;line-height:1.6}
+.features{text-align:left;margin:10px 0 16px;background:#f8f9fa;padding:16px;border-radius:12px}
+.fi{margin:8px 0;padding-left:15px;border-left:3px solid #C8102E;font-size:15px;line-height:1.55}
 .fi b{color:#C8102E}
 
-.btn1{background:#C8102E;color:#fff;border:none;padding:18px 60px;font-size:22px;font-weight:bold;border-radius:14px;cursor:pointer;box-shadow:0 8px 25px rgba(200,16,46,.4);transition:all .3s}
-.btn1:hover{transform:translateY(-3px);box-shadow:0 12px 35px rgba(200,16,46,.5)}
+.btn1{background:#C8102E;color:#fff;border:none;padding:18px 56px;font-size:22px;font-weight:bold;border-radius:14px;cursor:pointer;box-shadow:0 8px 25px rgba(200,16,46,.4);transition:box-shadow .3s}
+.btn1:hover{box-shadow:0 12px 35px rgba(200,16,46,.5)}
 
-#p2{padding:30px;max-width:900px;margin:0 auto}
-.cfg-title{color:#C8102E;font-size:28px;font-weight:900;text-align:center}
-.cfg-sub{color:#8B0000;font-size:14px;text-align:center;margin:10px 0 30px}
+.hero-art-wrap{position:relative;margin-top:6px}
+.hero-art{width:100%;height:min(33vh,280px);border-radius:16px;border:2px solid #f1d1d8;object-fit:cover;background:linear-gradient(180deg,#ffe9ed,#ffe3c3)}
+.landing-cta{margin-top:12px;transition:transform .3s ease,box-shadow .3s ease}
+.landing-cta:hover{transform:translateY(-3px)}
 
-.section-l{font-size:17px;font-weight:bold;color:#333;margin:25px 0 15px;display:flex;align-items:center;gap:10px}
+#p2{padding:14px 20px;max-width:1120px;margin:0 auto}
+.cfg-title{color:#C8102E;font-size:24px;font-weight:900;text-align:center}
+.cfg-sub{color:#8B0000;font-size:13px;text-align:center;margin:4px 0 14px}
+
+.section-l{font-size:15px;font-weight:bold;color:#333;margin:14px 0 8px;display:flex;align-items:center;gap:8px}
 .ai-tag{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-size:11px;padding:4px 10px;border-radius:10px;font-weight:600}
 
-.sg{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px}
-.sc{flex:1;min-width:110px;padding:14px;background:#fff;border:2px solid #E5E7EB;border-radius:10px;cursor:pointer;text-align:center;transition:all .2s}
+.sg{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.sc{padding:10px;background:#fff;border:2px solid #E5E7EB;border-radius:10px;cursor:pointer;text-align:center;transition:all .2s;font-size:13px}
 .sc:hover{border-color:#C8102E;transform:translateY(-2px)}
 .sc.on{border-color:#C8102E;background:#FFE6E6}
 
-.mg{display:flex;gap:18px;margin-bottom:20px}
-.mc{flex:1;padding:20px;background:#fff;border:2px solid #E5E7EB;border-radius:12px;text-align:center;transition:all .2s;min-height:200px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.mg{display:flex;gap:10px;margin-bottom:10px}
+.mc{flex:1;padding:14px;background:#fff;border:2px solid #E5E7EB;border-radius:12px;text-align:center;transition:all .2s;min-height:152px;display:flex;flex-direction:column;align-items:center;justify-content:center}
 .mc:hover{border-color:#C8102E;transform:translateY(-2px);box-shadow:0 4px 15px rgba(0,0,0,.1)}
-.ma{width:64px;height:64px;border-radius:18px;background:linear-gradient(160deg,#f4f7ff,#e6efff);display:flex;align-items:center;justify-content:center;margin-bottom:10px;overflow:hidden;box-shadow:inset 0 -6px 12px rgba(66,104,174,.12)}
+.ma{width:54px;height:54px;border-radius:16px;background:linear-gradient(160deg,#f4f7ff,#e6efff);display:flex;align-items:center;justify-content:center;margin-bottom:8px;overflow:hidden;box-shadow:inset 0 -6px 12px rgba(66,104,174,.12)}
 .ma img{width:100%;height:100%;object-fit:cover}
 .ma.avatar-emoji{font-size:40px;line-height:1}
-.mn{font-weight:bold;font-size:16px;margin-bottom:8px;color:#333}
+.mn{font-weight:bold;font-size:15px;margin-bottom:4px;color:#333}
 .mr{font-size:13px;color:#666;margin-top:5px}
 .mc-tooltip{position:relative}
 #customTooltip{position:fixed;background:#333;color:#fff;padding:12px 16px;border-radius:8px;font-size:13px;white-space:pre-wrap;max-width:400px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,0.25);pointer-events:none;display:none;line-height:1.6}
 #customTooltip.visible{display:block}
 
 
-.ab{display:flex;gap:18px;justify-content:center;margin-top:35px}
+.ab{display:flex;gap:12px;justify-content:center;margin-top:12px}
 .btn2{padding:12px 25px;background:#fff;border:2px solid #E5E7EB;border-radius:10px;cursor:pointer;font-size:14px;transition:all .2s}
 .btn2:hover{border-color:#999}
-.btn3{padding:15px 45px;background:#C8102E;color:#fff;border:none;border-radius:12px;cursor:pointer;font-size:18px;font-weight:bold;box-shadow:0 6px 20px rgba(200,16,46,.3);transition:all .3s}
+.btn3{padding:12px 34px;background:#C8102E;color:#fff;border:none;border-radius:12px;cursor:pointer;font-size:16px;font-weight:bold;box-shadow:0 6px 20px rgba(200,16,46,.3);transition:all .3s}
 .btn3:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(200,16,46,.4)}
 .mb2{background:#fff;border:2px solid #E5E7EB;border-radius:8px;padding:8px 12px;cursor:pointer;font-size:14px;transition:all .2s}
 .mb2:hover{border-color:#667eea}
@@ -65,7 +64,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 select{background:#fff;border:2px solid #E5E7EB;border-radius:8px;padding:10px;font-size:14px;cursor:pointer}
 select:focus{outline:none;border-color:#667eea}
 
-#p3{background:#F8FAFC;height:100vh;overflow:auto}
+#p3{background:#F8FAFC;height:100vh;overflow:hidden}
 .ch{background:#fff;padding:10px 14px;border-bottom:1px solid #E2E8F0;display:flex;justify-content:space-between;align-items:center;position:relative;z-index:200;gap:10px;flex-wrap:wrap}
 .hl{display:flex;align-items:center;gap:25px}
 .bb{padding:8px 16px;background:#4A90E2;color:#fff;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
@@ -249,6 +248,26 @@ select:focus{outline:none;border-color:#667eea}
 .interview-tag:hover{border-color:#667eea;background:#f0f3ff}
 .interview-tag.selected{border-color:#667eea;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;box-shadow:0 4px 15px rgba(102,126,234,.3)}
 
+#p2 .banquet-level-tag{padding:10px 14px;font-size:13px}
+#p2 .pressure-tag{padding:8px 12px;font-size:13px}
+#p2 .interview-tag{padding:8px 12px;font-size:13px}
+#p2 #sceneDescription{padding:10px;margin:6px 0}
+#p2 #sceneDescriptionText{font-size:13px;line-height:1.45}
+
+@media (max-height: 950px){
+  #p2{padding:10px 14px}
+  .cfg-title{font-size:22px}
+  .cfg-sub{margin-bottom:10px}
+  .section-l{margin:10px 0 6px}
+  .mc{min-height:136px;padding:10px}
+  .ma{width:46px;height:46px}
+  .btn3{padding:10px 28px;font-size:15px}
+}
+
+@media (max-width: 900px){
+  .sg{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+
 .confirm-edit-btn{padding:10px 24px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;transition:all .2s;box-shadow:0 4px 12px rgba(102,126,234,.3)}
 .confirm-edit-btn:hover{transform:translateY(-2px);box-shadow:0 6px 16px rgba(102,126,234,.4)}
 .confirm-edit-btn:disabled{opacity:.6;cursor:not-allowed;transform:none}
@@ -350,19 +369,16 @@ select:focus{outline:none;border-color:#667eea}
 <div class="logo">🎯</div>
 <div class="title">表达训练营</div>
 <div class="sub">AI驱动的口语表达实战训练平台</div>
-<div class="tech-badges">
-<span class="badge">Multi-Agent协同</span>
-<span class="badge rag">RAG知识增强</span>
-<span class="badge decision">决策引擎</span>
-<span class="badge validator">防幻觉机制</span>
-</div>
 <div class="features">
 <div class="fi">长辈劝酒你想回怼吗？领导夹菜你敢转桌吗？群面现场你要互撕吗？</div>
 <div class="fi">来这里！帮你实现愿望！社交修罗场、职场商务局、群面竞争战，全实战模拟！</div>
 <div class="fi">带你领悟表达里的暗藏玄机，掌握高情商的表达的精髓，将“表达”修炼成达成目标的利器！</div>
 </div>
-<button class="btn1" onclick="goCfg()">开始挑战</button>
+<div class="hero-art-wrap">
+<img class="hero-art" src="/assets/img/home_table_illustration.svg" alt="首页配图">
 </div>
+</div>
+<button class="btn1 landing-cta" onclick="goCfg()">开始挑战</button>
 </div>
 
 <div id="p2" class="page">
@@ -370,14 +386,14 @@ select:focus{outline:none;border-color:#667eea}
 <div class="cfg-sub">选择你的训练场</div>
 <div class="section-l">选择场景</div>
 <div class="sg" id="sg"></div>
-<div class="ab" style="margin-top:20px;margin-bottom:20px;">
+<div class="ab" style="margin-top:10px;margin-bottom:10px;">
 <button class="btn2" id="sceneGenBtn" onclick="regenerateScene()" disabled>🔄 重新生成场景设定</button>
 </div>
 
 <div class="banquet-level-wrapper" id="banquetLevelWrapper" style="display:none;">
   <div class="banquet-level-row" style="display:flex;align-items:flex-end;justify-content:space-between;gap:30px;">
     <div class="banquet-level-section" style="flex:1;">
-      <div class="section-l" style="margin-top:25px;margin-bottom:10px;">酒局等级</div>
+      <div class="section-l" style="margin-top:10px;margin-bottom:6px;">酒局等级</div>
       <div class="banquet-level-tags" id="banquetLevelTags">
         <div class="banquet-level-tag mc-tooltip selected" data-level="formal" onclick="selectBanquetLevel(this)" data-tooltip="礼仪性资源展示，信任建立的前置仪式">
           🍽️ 正式商务宴请
@@ -394,7 +410,7 @@ select:focus{outline:none;border-color:#667eea}
       </div>
     </div>
     <div class="drinking-capacity-section" style="display:flex;flex-direction:column;align-items:flex-end;">
-      <div class="section-l" style="margin-top:25px;margin-bottom:10px;">我的酒量</div>
+      <div class="section-l" style="margin-top:10px;margin-bottom:6px;">我的酒量</div>
       <div class="drinking-capacity-stars" id="drinkingCapacityStars">
         <span class="star" data-index="0" onclick="setDrinkingCapacity(1)">☆</span>
         <span class="star" data-index="1" onclick="setDrinkingCapacity(2)">☆</span>
@@ -405,7 +421,7 @@ select:focus{outline:none;border-color:#667eea}
 </div>
 
 <div class="interview-info-wrapper" id="interviewInfoWrapper" style="display:none;">
-  <div class="section-l" style="margin-top:25px;margin-bottom:10px;">面试岗位</div>
+  <div class="section-l" style="margin-top:10px;margin-bottom:6px;">面试岗位</div>
   
   <div class="interview-row" style="display:flex;align-items:center;gap:15px;margin-bottom:15px;">
     <span style="font-size:14px;font-weight:600;color:#333;min-width:50px;">行业</span>
@@ -416,7 +432,7 @@ select:focus{outline:none;border-color:#667eea}
       <div class="interview-tag" data-value="咨询" onclick="selectIndustry(this)">咨询</div>
       <div class="interview-tag" data-value="自定义" onclick="selectIndustry(this)">自定义</div>
     </div>
-    <input type="text" id="customIndustryInput" placeholder="请输入行业" oninput="updateInterviewQuestion()" style="display:none;width:180px;padding:10px 15px;border:2px solid #667eea;border-radius:12px;font-size:14px;outline:none;">
+    <input type="text" id="customIndustryInput" placeholder="请输入行业" oninput="updateInterviewQuestion()" style="display:none;width:160px;padding:8px 12px;border:2px solid #667eea;border-radius:12px;font-size:13px;outline:none;">
   </div>
   
   <div class="interview-row" style="display:flex;align-items:center;gap:15px;">
@@ -428,7 +444,7 @@ select:focus{outline:none;border-color:#667eea}
       <div class="interview-tag" data-value="分析" onclick="selectPosition(this)">分析</div>
       <div class="interview-tag" data-value="自定义" onclick="selectPosition(this)">自定义</div>
     </div>
-    <input type="text" id="customPositionInput" placeholder="请输入岗位" oninput="updateInterviewQuestion()" style="display:none;width:180px;padding:10px 15px;border:2px solid #667eea;border-radius:12px;font-size:14px;outline:none;">
+    <input type="text" id="customPositionInput" placeholder="请输入岗位" oninput="updateInterviewQuestion()" style="display:none;width:160px;padding:8px 12px;border:2px solid #667eea;border-radius:12px;font-size:13px;outline:none;">
   </div>
 </div>
 
@@ -437,10 +453,10 @@ select:focus{outline:none;border-color:#667eea}
   <span style="font-size:12px;color:#667eea;cursor:pointer;" onclick="toggleSceneEdit()">✏️ 编辑</span>
   <button class="btn2" id="aiCustomizeBtn" onclick="generateCustomInterviewQuestion()" style="display:none;padding:8px 16px;font-size:13px;float:right;">🤖 AI定制</button>
 </div>
-<div class="scene-description" id="sceneDescription" style="display:none;background:#f8f9fa;border-radius:10px;padding:15px;margin:10px 0;border-left:4px solid #667eea;">
+<div class="scene-description" id="sceneDescription" style="display:none;background:#f8f9fa;border-radius:10px;padding:10px;margin:6px 0;border-left:4px solid #667eea;">
   <div id="sceneDescriptionText" style="font-size:14px;color:#333;line-height:1.5;"></div>
   <div id="sceneEditWrapper" style="display:none;">
-    <textarea id="sceneDescriptionEdit" style="width:100%;min-height:100px;border:1px solid #ddd;border-radius:5px;padding:10px;font-size:14px;color:#333;line-height:1.5;resize:vertical;"></textarea>
+    <textarea id="sceneDescriptionEdit" style="width:100%;min-height:80px;border:1px solid #ddd;border-radius:5px;padding:8px;font-size:13px;color:#333;line-height:1.4;resize:vertical;"></textarea>
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:10px 0 0 0;">
       <button class="ai-optimize-btn" id="aiOptimizeBtn" onclick="aiOptimizeContent()">🌟 AI优化</button>
       <button class="confirm-edit-btn" id="confirmEditBtn" onclick="confirmSceneEdit()">确认</button>
@@ -448,7 +464,7 @@ select:focus{outline:none;border-color:#667eea}
   </div>
 </div>
 <div class="pressure-section-wrapper" id="pressureSectionWrapper" style="display:none;">
-  <div class="pressure-header-row" style="display:flex;align-items:center;justify-content:space-between;margin-top:25px;margin-bottom:10px;">
+  <div class="pressure-header-row" style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;margin-bottom:6px;">
     <div class="section-l" style="margin:0;">压力敏感区 <span style="font-size:12px;color:#667eea;">可选填</span></div>
     <div class="pressure-value-box" id="pressureValueBox" style="display:flex;align-items:center;gap:10px;background:#f8f9fa;border-radius:12px;padding:8px 15px;border:1px solid #E2E8F0;">
       <span style="font-size:13px;font-weight:600;color:#333;white-space:nowrap;">压力值</span>
@@ -522,6 +538,7 @@ select:focus{outline:none;border-color:#667eea}
 <div class="cb" id="cb" style="display:none"><span class="cb-icon">💡</span><span class="ct2" id="ct2"></span></div>
 <div class="ia">
 <button class="mb" onclick="toggleCameraPanel()">📷</button>
+<button class="mb" id="micInputBtn" onclick="toggleM()">🎤</button>
 <input class="ci2" id="ci2" placeholder="输入消息..." onkeypress="if(event.key==='Enter')send()" autocomplete="off" name="message_input">
 <button class="sb" onclick="send()">发送</button>
 </div>

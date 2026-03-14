@@ -560,22 +560,7 @@ function inferBeat(){const confusion=Math.max(0,Math.min(100,(100-emotionData.fo
 function runNonverbalLoop(){if(talkingHeadTimer)clearInterval(talkingHeadTimer);talkingHeadTimer=setInterval(()=>{if(!$('p3').classList.contains('active'))return;blinkRandom()},1400)}
 function goBackFromGame(){
     if(confirm('返回将清除当前对话记录，确定要返回吗？')){
-        stopNpcVoice();
-        sid=null;
-        hist=[];
-        pendingUtterances=[];
-        if(typeof resetUtteranceBlackboard==='function')resetUtteranceBlackboard([]);
-        shouldAwaitUser=true;
-        isNPCSpeaking=false;
-        lastSpeaker='';
-        
-        $('mc2').innerHTML='';
-        $('cl').innerHTML='';
-        $('cb').style.display='none';
-        $('interruptBtn').style.display='none';
-        updScr(50,50);
-        renderConversationState('idle');
-        
+        resetSessionStateForNewRound();
         show('p2');
     }
 }
@@ -641,7 +626,31 @@ function refreshBanquetLevelInfo(){
         applySceneInfo(banquetLevelDescriptions[selectedBanquetLevel]);
     }
 }
-function goCfg(){show('p2')}
+function resetSessionStateForNewRound(){
+    stopNpcVoice();
+    sid=null;
+    hist=[];
+    pendingUtterances=[];
+    if(typeof resetUtteranceBlackboard==='function')resetUtteranceBlackboard([]);
+    shouldAwaitUser=true;
+    isNPCSpeaking=false;
+    lastSpeaker='';
+    const mc2=$('mc2');
+    const cl=$('cl');
+    const cb=$('cb');
+    const interruptBtn=$('interruptBtn');
+    if(mc2)mc2.innerHTML='';
+    if(cl)cl.innerHTML='';
+    if(cb)cb.style.display='none';
+    if(interruptBtn)interruptBtn.style.display='none';
+    updScr(50,50);
+    updateMetrics(null);
+    renderConversationState('idle');
+}
+function goCfg(){
+    resetSessionStateForNewRound();
+    show('p2');
+}
 function selScene(el){
     document.querySelectorAll('.sc').forEach(e=>e.classList.remove('on'));
     el.classList.add('on');
@@ -1115,7 +1124,7 @@ function updScr(u,a){$('us').textContent=Math.round(u);$('as').textContent=Math.
 async function rescue(){
     if(!sid)return;
     try{
-        if(typeof window.__setLlmBusy==='function')window.__setLlmBusy(true,'救场建议生成中');
+        if(typeof window.__setLlmBusy==='function')window.__setLlmBusy(true,'时间暂停，众人思考中');
         setCoachHint('救场建议生成中，请稍候...');
         const r=await fetch('/api/chat/rescue',{
             method:'POST',
@@ -1240,6 +1249,9 @@ function buildReportHtml(data){
             <button class="view-btn" onclick="saveCurrentReportImage()">保存到本地</button>
             <button class="view-btn" onclick="shareCurrentReport()">分享报告</button>
             <button class="view-btn" onclick="goCfg()">再练一局</button>
+        </div>
+        <div style="margin-top:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:14px;">
+            <img src="/assets/img/report_footer_illustration.svg" alt="报告装饰图" style="width:100%;height:auto;border-radius:12px;display:block;">
         </div>
     </section>
 </div>`;
@@ -1826,15 +1838,69 @@ function drawRadarChart(scores){
         ctx.fillText(i*20,x,y);
     }
 }
-function toggleCameraPanel(){const panel=$('monitorPanel');if(!panel)return;panel.classList.add('visible');panel.scrollIntoView({behavior:'smooth',block:'nearest',inline:'nearest'});logClient('info','camera_panel_focus',{visible:true});}
+async function quickOpenCamera(){
+    const panel=$('monitorPanel');
+    if(panel){
+        panel.classList.add('visible');
+        panel.scrollIntoView({behavior:'smooth',block:'nearest',inline:'nearest'});
+    }
+    if(!isC){
+        await toggleC();
+    }
+    logClient('info','camera_quick_open',{visible:true,opened:!!isC});
+}
+function toggleCameraPanel(){quickOpenCamera()}
 function toggleMicPanel(){if(isFirstMicClick){alert('欢迎使用麦克风功能！\n\n请选择您的麦克风设备，然后点击"开启麦克风"按钮。');isFirstMicClick=false;}toggleM2();}
 async function toggleC(){const b=$('cmb'),vid=$('camVideo'),ph=$('camPlaceholder'),camId=$('camSelect').value;if(isC){if(cam)cam.getTracks().forEach(t=>t.stop());if(emotionInterval)clearInterval(emotionInterval);isC=0;b.textContent='📷 开启摄像头';b.classList.remove('on');vid.pause();vid.srcObject=null;vid.style.display='none';ph.style.display='flex';ph.textContent='摄像头未开启';$('ei').textContent='❓';$('et').textContent='未检测';emotionData={confidence:50,calm:50,nervous:20,focus:50};updateEmotionDisplay()}else{try{const constraints={video:{width:320,height:240,facingMode:'user'}};if(camId)constraints.deviceId={exact:camId};cam=await navigator.mediaDevices.getUserMedia(constraints);isC=1;b.textContent='✅ 已开启';b.classList.add('on');vid.srcObject=cam;vid.style.display='block';ph.style.display='none';vid.play().then(()=>{emotionInterval=setInterval(()=>{if(!isC)return;const eList=[{i:'😊',t:'开心',c:80,n:10,cal:60,f:70},{i:'😎',t:'自信',c:90,n:5,cal:50,f:80},{i:'😐',t:'平静',c:40,n:10,cal:90,f:50},{i:'😰',t:'紧张',c:30,n:90,cal:20,f:40},{i:'🤔',t:'思考',c:60,n:30,cal:70,f:95},{i:'🙂',t:'放松',c:70,n:5,cal:80,f:60},{i:'😤',t:'坚定',c:85,n:15,cal:40,f:75}];const e=eList[Math.floor(Math.random()*eList.length)];$('ei').textContent=e.i;$('et').textContent=e.t;emotionData={confidence:e.c,nervous:e.n,calm:e.cal,focus:e.f};updateEmotionDisplay();console.log('[Emotion] 实时分析:', emotionData)},1500)}).catch(e=>{console.log('播放失败:',e)})}catch(e){alert('无法开启摄像头: '+e.message)}}}
 function updateEmotionDisplay(){$('val-confidence').textContent=emotionData.confidence;$('val-calm').textContent=emotionData.calm;$('val-nervous').textContent=emotionData.nervous;$('val-focus').textContent=emotionData.focus;$('bar-confidence').style.width=emotionData.confidence+'%';$('bar-calm').style.width=emotionData.calm+'%';$('bar-nervous').style.width=emotionData.nervous+'%';$('bar-focus').style.width=emotionData.focus+'%'}
-function updateMetrics(scores){console.log('[Metrics] 收到分数:', scores);if(scores){const total=Math.round((scores.emotional_intelligence+scores.response_quality+scores.pressure_handling+scores.cultural_fit)/4);$('val-score').textContent=total;$('bar-score').style.width=total+'%'}else{console.log('[Metrics] 分数为空')}}
+function _heuristicTextScore(){
+    const userTurns=hist.filter(x=>x&&x.role==='user').map(x=>String(x.content||''));
+    if(!userTurns.length)return 50;
+    const totalLen=userTurns.reduce((n,t)=>n+t.length,0);
+    const avgLen=totalLen/userTurns.length;
+    const turnBonus=Math.min(18,userTurns.length*3);
+    const lenBonus=Math.max(0,Math.min(14,Math.round((avgLen-8)/3)));
+    return Math.max(50,Math.min(88,50+turnBonus+lenBonus));
+}
+function updateMetrics(scores){
+    console.log('[Metrics] 收到分数:', scores);
+    const valEl=$('val-score');
+    const barEl=$('bar-score');
+    if(!valEl||!barEl)return;
+    let total=50;
+    if(scores&&typeof scores==='object'){
+        const direct=Number(scores.total);
+        if(Number.isFinite(direct)&&direct>0){
+            total=direct;
+        }else{
+            const modern=['oily','friendliness','logic','humor','respect']
+                .map(k=>Number(scores[k]))
+                .filter(v=>Number.isFinite(v));
+            if(modern.length){
+                total=modern.reduce((a,b)=>a+b,0)/modern.length;
+            }else{
+                const legacy=['emotional_intelligence','response_quality','pressure_handling','cultural_fit']
+                    .map(k=>Number(scores[k]))
+                    .filter(v=>Number.isFinite(v));
+                if(legacy.length){
+                    total=legacy.reduce((a,b)=>a+b,0)/legacy.length;
+                }else{
+                    total=_heuristicTextScore();
+                }
+            }
+        }
+    }else{
+        total=_heuristicTextScore();
+    }
+    const safe=Math.max(0,Math.min(100,Math.round(total)));
+    valEl.textContent=String(safe);
+    barEl.style.width=safe+'%';
+}
 function toggleM(){toggleM2()}
 async function loadDevices(){try{const devs=await navigator.mediaDevices.enumerateDevices();const cams=devs.filter(d=>d.kind==='videoinput');const mics=devs.filter(d=>d.kind==='audioinput');$('camSelect').innerHTML='<option value="">📷 选择摄像头</option>'+cams.map((d,i)=>`<option value="${d.deviceId}">${d.label||'摄像头'+(i+1)}</option>`).join('');$('micSelect').innerHTML='<option value="">🎤 选择麦克风</option>'+mics.map((d,i)=>`<option value="${d.deviceId}">${d.label||'麦克风'+(i+1)}</option>`).join('')}catch(e){}}
 window.onload=()=>{
     updateNpcVoiceButton();
+    updateMetrics(null);
     // 初始化场景选择，确保压力敏感区正确显示
     renderScenes();
     genMems();

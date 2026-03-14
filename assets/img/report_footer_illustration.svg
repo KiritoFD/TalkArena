@@ -1,0 +1,21 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" fill="none">
+  <defs>
+    <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e0ecff"/>
+      <stop offset="1" stop-color="#fdf2f8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="420" rx="28" fill="url(#g1)"/>
+  <ellipse cx="600" cy="320" rx="430" ry="86" fill="#ffffff" opacity="0.82"/>
+  <g fill="#334155" opacity="0.78">
+    <circle cx="430" cy="285" r="44"/>
+    <circle cx="600" cy="262" r="52"/>
+    <circle cx="775" cy="288" r="42"/>
+  </g>
+  <g fill="#93c5fd" opacity="0.88">
+    <rect x="386" y="326" width="88" height="44" rx="20"/>
+    <rect x="548" y="306" width="104" height="50" rx="22"/>
+    <rect x="736" y="328" width="82" height="42" rx="19"/>
+  </g>
+  <text x="600" y="376" text-anchor="middle" fill="#1e293b" font-size="34" font-weight="700">持续练习，表达会越来越稳</text>
+</svg>

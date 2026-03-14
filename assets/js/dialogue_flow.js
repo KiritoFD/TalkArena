@@ -21,7 +21,7 @@ function _ensureLlmBusyUi(){
     document.body.appendChild(bar);
 }
 
-function _setLlmBusy(active,label='模型生成中'){
+function _setLlmBusy(active,label='时间暂停，众人思考中'){
     _ensureLlmBusyUi();
     llmBusyCount=Math.max(0,llmBusyCount+(active?1:-1));
     const busy=llmBusyCount>0;
@@ -47,7 +47,7 @@ function _setLlmBusy(active,label='模型生成中'){
         llmBusyTick=(llmBusyTick+1)%4;
         const dots='.'.repeat(llmBusyTick);
         if(input)input.placeholder=`${label}${dots}`;
-        if(sendBtn)sendBtn.textContent=`生成中${dots}`;
+        if(sendBtn)sendBtn.textContent=`请稍等${dots}`;
     },360);
 }
 window.__setLlmBusy=_setLlmBusy;
@@ -86,6 +86,7 @@ $('cl').innerHTML=chars.map(c=>buildHeadCard(c)).join('');
 renderConversationState('idle');
 runNonverbalLoop();
 updScr(50,50);
+updateMetrics(null);
 setCoachHint('');
 
 // 处理面试问题显示
@@ -155,7 +156,7 @@ const t=$('ci2').value.trim();if(!t||!sid)return;$('ci2').value='';stopNpcVoice(
 await unlockNpcAudio();
 const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
-_setLlmBusy(true,'AI思考中');
+_setLlmBusy(true,'时间暂停，众人思考中');
 try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
     if(d.data.utterances){
