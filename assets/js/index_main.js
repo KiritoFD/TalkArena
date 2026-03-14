@@ -1130,7 +1130,14 @@ async function rescue(){
         const r=await fetch('/api/chat/rescue',{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({session_id:sid})
+            body:JSON.stringify({
+                session_id:sid,
+                chat_history:(typeof buildChatHistoryPayload==='function')?buildChatHistoryPayload():(Array.isArray(hist)?hist:[]),
+                scenario_id:selectedScenarioId,
+                scene_name:scene,
+                scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),
+                characters:chars
+            })
         });
         const d=await r.json();
         if(d.success&&d.data&&d.data.suggestion){
@@ -1709,10 +1716,23 @@ async function end(){
         if(endBtn)endBtn.disabled=true;
         _startEndLoading();
         logClient('info','end_clicked',{sid:activeSid});
+        const historyPayload=(typeof buildChatHistoryPayload==='function')
+            ? buildChatHistoryPayload()
+            : (Array.isArray(hist)?hist
+                .filter(x=>x&&typeof x==='object'&&String(x.content||'').trim())
+                .map(x=>({role:String(x.role||'assistant'),speaker:String(x.speaker||''),content:String(x.content||'').trim()}))
+                : []);
         const r=await fetch('/api/session/end',{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({session_id:activeSid})
+            body:JSON.stringify({
+                session_id:activeSid,
+                chat_history:historyPayload,
+                scenario_id:selectedScenarioId,
+                scene_name:scene,
+                scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),
+                characters:chars
+            })
         });
         if(!r.ok){
             throw new Error(`结束会话接口异常: HTTP ${r.status}`);

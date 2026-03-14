@@ -14,6 +14,7 @@ import json
 import threading
 import copy
 import builtins
+import pickle
 from pathlib import Path
 from collections import OrderedDict
 from datetime import datetime
@@ -68,6 +69,59 @@ SHARE_REPORT_DIR = Path(tempfile.gettempdir()) / "talkarena_share_reports"
 SHARE_REPORT_MAX_ITEMS = int(os.getenv("SHARE_REPORT_MAX_ITEMS", "200"))
 SHARE_REPORT_INDEX: "OrderedDict[str, str]" = OrderedDict()
 IMGBB_API_KEY_DEFAULT = os.getenv("IMGBB_API_KEY_DEFAULT", "a99c8f498d65ff27bcfe2404998a5fc3")
+SESSION_SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "talkarena_session_snapshots"
+
+
+def _session_snapshot_path(session_id: str) -> Path:
+    safe = "".join(ch for ch in str(session_id or "") if ch.isalnum() or ch in ("-", "_"))
+    return SESSION_SNAPSHOT_DIR / f"{safe}.pkl"
+
+
+def _save_session_snapshot(eng, session_id: str) -> None:
+    try:
+        if not session_id or not hasattr(eng, "sessions"):
+            return
+        session = eng.sessions.get(session_id)
+        if session is None:
+            return
+        SESSION_SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        path = _session_snapshot_path(session_id)
+        with open(path, "wb") as f:
+            pickle.dump(session, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"[SessionSnapshot] saved sid={session_id} path={path.name}")
+    except Exception as e:
+        print(f"[SessionSnapshot] save failed sid={session_id}: {e}")
+
+
+def _try_restore_session_snapshot(eng, session_id: str) -> bool:
+    try:
+        if not session_id or not hasattr(eng, "sessions"):
+            return False
+        if session_id in eng.sessions:
+            return True
+        path = _session_snapshot_path(session_id)
+        if not path.exists():
+            return False
+        with open(path, "rb") as f:
+            session = pickle.load(f)
+        if not isinstance(session, dict):
+            return False
+        eng.sessions[session_id] = session
+        print(f"[SessionSnapshot] restored sid={session_id} path={path.name}")
+        return True
+    except Exception as e:
+        print(f"[SessionSnapshot] restore failed sid={session_id}: {e}")
+        return False
+
+
+def _delete_session_snapshot(session_id: str) -> None:
+    try:
+        path = _session_snapshot_path(session_id)
+        if path.exists():
+            path.unlink()
+            print(f"[SessionSnapshot] deleted sid={session_id} path={path.name}")
+    except Exception as e:
+        print(f"[SessionSnapshot] delete failed sid={session_id}: {e}")
 
 
 def _public_base_url() -> str:
@@ -569,6 +623,10 @@ class ChatReq(BaseModel):
     message: str = ""
     chat_history: Optional[List[Dict]] = []
     multimodal: Optional[Dict] = None
+    scenario_id: Optional[str] = None
+    scene_name: Optional[str] = None
+    scene_description: Optional[str] = None
+    characters: Optional[List[Dict]] = None
 
 
 class SessionReq(BaseModel):
@@ -620,6 +678,80 @@ class TTSReq(BaseModel):
 
 class ShareReportImageReq(BaseModel):
     image_data: str
+
+
+def _rehydrate_session_from_request(eng, req: ChatReq) -> bool:
+    """Rebuild a minimal session from client payload when server memory is missing."""
+    try:
+        if not hasattr(eng, "sessions") or not req.session_id:
+            return False
+        if req.session_id in eng.sessions:
+            return True
+        raw_history = req.chat_history or []
+        if not isinstance(raw_history, list) or not raw_history:
+            return False
+
+        scenario_id = (req.scenario_id or "shandong_dinner").strip() or "shandong_dinner"
+        scenario_map = getattr(eng, "scenarios", {}) or {}
+        scenario = copy.deepcopy(
+            scenario_map.get(scenario_id) or scenario_map.get("shandong_dinner") or {}
+        )
+        if not isinstance(scenario, dict):
+            scenario = {}
+        if isinstance(req.characters, list) and req.characters:
+            scenario["characters"] = req.characters
+        if req.scene_description:
+            scenario["description"] = str(req.scene_description)
+
+        unified_history: List[Dict] = []
+        history: List[Dict] = []
+        for item in raw_history:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("content") or item.get("text") or "").strip()
+            if not text:
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            is_user = role in {"user", "human", "用户"}
+            speaker = str(item.get("speaker") or item.get("npc_id") or "").strip()
+            if not speaker:
+                speaker = "用户" if is_user else "NPC"
+            unified_history.append(
+                {
+                    "speaker": speaker,
+                    "text": text,
+                    "is_user": is_user,
+                    "timestamp_ms": int(time.time() * 1000),
+                }
+            )
+            history.append({"speaker": speaker, "text": text})
+
+        if not unified_history:
+            return False
+
+        eng.sessions[req.session_id] = {
+            "scenario_id": scenario_id,
+            "scenario": scenario,
+            "scene_name": req.scene_name or scenario.get("name", "本轮会话"),
+            "turn_count": 0,
+            "dominance": {"user": 50, "ai": 50},
+            "history": history,
+            "scores_history": [],
+            "unified_history": unified_history,
+            "chat_history": raw_history,
+            "pressure_tags": [],
+            "pressure_value": 5,
+            "drinking_capacity": 0,
+        }
+        _save_session_snapshot(eng, req.session_id)
+        print(
+            f"[SessionRehydrate] rebuilt sid={req.session_id} "
+            f"history={len(unified_history)} scenario_id={scenario_id}"
+        )
+        return True
+    except Exception as e:
+        print(f"[SessionRehydrate] failed sid={getattr(req, 'session_id', '')}: {e}")
+        return False
 
 
 def _load_scene_preset_prompts() -> Dict[str, Dict[str, str]]:
@@ -1256,6 +1388,7 @@ async def start_session(req: SessionReq):
                 f"utterances={len(preset_utterances or [])} with_tts_url={with_url}"
             )
             if preset_utterances:
+                _save_session_snapshot(eng, session_id)
                 return {
                     "success": True,
                     "data": {
@@ -1275,6 +1408,7 @@ async def start_session(req: SessionReq):
                         "[SessionStart] unified process_turn complete "
                         f"utterances={len(utterances or [])} with_tts_url={with_url}"
                     )
+                    _save_session_snapshot(eng, session_id)
                     return {
                         "success": True,
                         "data": {
@@ -1315,6 +1449,7 @@ async def start_session(req: SessionReq):
                     }
                 )
 
+            _save_session_snapshot(eng, session_id)
             return {
                 "success": True,
                 "data": {
@@ -1350,6 +1485,11 @@ async def send_msg(req: ChatReq):
     except Exception as e:
         return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
+        _try_restore_session_snapshot(eng, req.session_id)
+    if req.session_id not in eng.sessions:
+        print(f"[SessionLookup] miss sid={req.session_id} chat_history_len={len(req.chat_history or [])}")
+        _rehydrate_session_from_request(eng, req)
+    if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
     try:
@@ -1378,6 +1518,7 @@ async def send_msg(req: ChatReq):
                 if isinstance(payload.get("utterances"), list) and turn_idx <= 4:
                     chars = (session.get("scenario") or {}).get("characters", []) if isinstance(session, dict) else []
                     payload["utterances"] = _prebuild_utterance_tts(payload.get("utterances") or [], chars or [])
+                _save_session_snapshot(eng, req.session_id)
                 if mm_result:
                     payload["multimodal_analysis"] = mm_result
                 return {
@@ -1399,7 +1540,7 @@ async def send_msg(req: ChatReq):
 
 
 @app.post("/api/chat/interrupt")
-async def interrupt_chat(req: InterruptReq):
+async def interrupt_chat(req: ChatReq):
     if not req.session_id:
         return {"success": False, "error": "参数错误"}
 
@@ -1407,6 +1548,11 @@ async def interrupt_chat(req: InterruptReq):
         eng = get_engine()
     except Exception as e:
         return {"success": False, "error": str(e)}
+    if req.session_id not in eng.sessions:
+        _try_restore_session_snapshot(eng, req.session_id)
+    if req.session_id not in eng.sessions:
+        print(f"[SessionLookup] miss sid={req.session_id} chat_history_len={len(req.chat_history or [])}")
+        _rehydrate_session_from_request(eng, req)
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -1419,6 +1565,7 @@ async def interrupt_chat(req: InterruptReq):
                 if isinstance(payload.get("utterances"), list) and turn_idx <= 4:
                     chars = (session.get("scenario") or {}).get("characters", []) if isinstance(session, dict) else []
                     payload["utterances"] = _prebuild_utterance_tts(payload.get("utterances") or [], chars or [])
+                _save_session_snapshot(eng, req.session_id)
                 return {"success": True, "data": payload}
 
         return {"success": False, "error": "处理失败"}
@@ -1429,7 +1576,7 @@ async def interrupt_chat(req: InterruptReq):
 
 
 @app.post("/api/chat/continue")
-async def continue_chat(req: InterruptReq):
+async def continue_chat(req: ChatReq):
     if not req.session_id:
         return {"success": False, "error": "参数错误"}
 
@@ -1437,6 +1584,11 @@ async def continue_chat(req: InterruptReq):
         eng = get_engine()
     except Exception as e:
         return {"success": False, "error": str(e)}
+    if req.session_id not in eng.sessions:
+        _try_restore_session_snapshot(eng, req.session_id)
+    if req.session_id not in eng.sessions:
+        print(f"[SessionLookup] miss sid={req.session_id} chat_history_len={len(req.chat_history or [])}")
+        _rehydrate_session_from_request(eng, req)
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -1449,6 +1601,7 @@ async def continue_chat(req: InterruptReq):
                 if isinstance(payload.get("utterances"), list) and turn_idx <= 4:
                     chars = (session.get("scenario") or {}).get("characters", []) if isinstance(session, dict) else []
                     payload["utterances"] = _prebuild_utterance_tts(payload.get("utterances") or [], chars or [])
+                _save_session_snapshot(eng, req.session_id)
                 return {"success": True, "data": payload}
 
         return {"success": False, "error": "处理失败"}
@@ -1467,6 +1620,11 @@ async def rescue(req: ChatReq):
         eng = get_engine()
     except Exception as e:
         return {"success": False, "error": str(e)}
+    if req.session_id not in eng.sessions:
+        _try_restore_session_snapshot(eng, req.session_id)
+    if req.session_id not in eng.sessions:
+        print(f"[SessionLookup] miss sid={req.session_id} chat_history_len={len(req.chat_history or [])}")
+        _rehydrate_session_from_request(eng, req)
     if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
@@ -1504,6 +1662,11 @@ async def end_session(req: ChatReq):
     except Exception as e:
         return {"success": False, "error": str(e)}
     if req.session_id not in eng.sessions:
+        _try_restore_session_snapshot(eng, req.session_id)
+    if req.session_id not in eng.sessions:
+        print(f"[SessionLookup] miss sid={req.session_id} chat_history_len={len(req.chat_history or [])}")
+        _rehydrate_session_from_request(eng, req)
+    if req.session_id not in eng.sessions:
         return {"success": False, "error": "会话不存在"}
 
     try:
@@ -1516,6 +1679,7 @@ async def end_session(req: ChatReq):
             f"score_keys={sorted((report.get('scores') or {}).keys())} "
             f"npc_os_count={len(report.get('npc_os_list') or [])}"
         )
+        _delete_session_snapshot(req.session_id)
         return {"success": True, "data": report}
     except Exception as e:
         print(f"[ClientAPI] api_end_session_failed session_id={req.session_id} error={e}")

@@ -6,6 +6,17 @@ let llmBusyCount=0;
 let llmBusyTimer=null;
 let llmBusyTick=0;
 
+function buildChatHistoryPayload(){
+    if(!Array.isArray(hist)||!hist.length)return [];
+    return hist
+        .filter(x=>x&&typeof x==='object'&&String(x.content||'').trim())
+        .map(x=>({
+            role:String(x.role||'assistant'),
+            speaker:String(x.speaker||'').trim(),
+            content:String(x.content||'').trim()
+        }));
+}
+
 function _ensureLlmBusyUi(){
     if(document.getElementById('llmBusyStyle'))return;
     const style=document.createElement('style');
@@ -176,7 +187,7 @@ await unlockNpcAudio();
 const multimodal={emotion:emotionData,voice_features:lastVoiceFeatures||null,voice_text:lastVoiceText||''};
 console.log('[Send] 消息:', t);console.log('[Send] 情感数据:', multimodal);
 _setLlmBusy(true,'时间暂停，众人思考中');
-try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal})});
+try{const r=await fetch('/api/chat/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:sid,message:t,multimodal:multimodal,chat_history:buildChatHistoryPayload(),scenario_id:selectedScenarioId,scene_name:scene,scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),characters:chars})});
 const d=await r.json();console.log('[Chat] 响应:', JSON.stringify(d, null, 2));if(d.success){
     if(d.data.utterances){
         resetUtteranceBlackboard(d.data.utterances||[]);
@@ -213,12 +224,12 @@ lastVoiceFeatures=null;
 lastVoiceText='';
 
 }
-function addUser(t){hist.push({role:'user',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
+function addUser(t){hist.push({role:'user',speaker:'用户',content:t});const c=$('mc2');c.innerHTML+=`<div class="msg u"><div class="mco">${t}</div></div>`;c.scrollTop=c.scrollHeight}
 
 function addBot(t,sp,emo){return addBotStreaming(t,sp,emo)}
 
 function addBotStreaming(t,sp,emo){
-    hist.push({role:'assistant',content:t});
+    hist.push({role:'assistant',speaker:sp||'',content:t});
     const c=$('mc2');
     const msgId='msg-'+Date.now();
     c.innerHTML+=`<div class="msg b" id="${msgId}">${sp?`<div class="ms">${sp}</div>`:''}${emo?`<span class="msg-emo">${emo}</span>`:''}<div class="mco"></div></div>`;
@@ -309,7 +320,14 @@ async function interrupt(){
         const r=await fetch('/api/chat/interrupt',{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({session_id:sid})
+            body:JSON.stringify({
+                session_id:sid,
+                chat_history:buildChatHistoryPayload(),
+                scenario_id:selectedScenarioId,
+                scene_name:scene,
+                scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),
+                characters:chars
+            })
         });
         const d=await r.json();
         if(d.success){
@@ -326,7 +344,14 @@ async function continueNPC(){
         const r=await fetch('/api/chat/continue',{
             method:'POST',
             headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({session_id:sid})
+            body:JSON.stringify({
+                session_id:sid,
+                chat_history:buildChatHistoryPayload(),
+                scenario_id:selectedScenarioId,
+                scene_name:scene,
+                scene_description:($('sceneDescriptionEdit')?.value||$('sceneDescriptionText')?.innerText||''),
+                characters:chars
+            })
         });
         const d=await r.json();
         if(d.success){
