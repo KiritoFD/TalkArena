@@ -1142,6 +1142,10 @@ function updScr(u,a){
     const ai=Math.max(0,Math.min(100,Math.round(Number(a)||50)));
     $('us').textContent=user;
     $('as').textContent=ai;
+    const valEl=$('val-score');
+    const barEl=$('bar-score');
+    if(valEl)valEl.textContent=String(user);
+    if(barEl)barEl.style.width=user+'%';
 }
 async function rescue(){
     if(!sid)return;
