@@ -15,6 +15,7 @@ TalkArena 不是普通聊天机器人，而是围绕“真实社交表达”打�
 - **表情信号**：你当下状态（紧张、迟疑、自信等面部线索）
 
 系统会把这三路信息汇总成统一状态，用来驱动：
+
 - 对话中的实时反馈（例如紧张度变化）
 - NPC 的压力感知与互动节奏
 - 局后复盘的多维评分与建议
@@ -32,6 +33,7 @@ TalkArena 不是普通聊天机器人，而是围绕“真实社交表达”打�
 - 上传的是**低维度的情绪/特征结果**，用于对话反馈与评估
 
 这意味着：
+
 - 你能获得实时表情反馈能力；
 - 同时最大化保护你的影像隐私。
 
@@ -42,32 +44,39 @@ TalkArena 不是普通聊天机器人，而是围绕“真实社交表达”打�
 ## 📸 在线界面预览（Vercel）
 
 ### 首页
-![TalkArena 首页](browser:/tmp/codex_browser_invocations/5ebafbae49ab221c/artifacts/shots/home.png)
+
+![1773569174001](image/README/1773569174001.png)
 
 ### 第二页：可选场景配置页
-![TalkArena 场景配置页](browser:/tmp/codex_browser_invocations/5ebafbae49ab221c/artifacts/shots/scene-config.png)
+
+![1773569189788](image/README/1773569189788.png)
 
 ### 对话页
-![TalkArena 对话页](browser:/tmp/codex_browser_invocations/5ebafbae49ab221c/artifacts/shots/dialogue.png)
+
+![1773569269697](image/README/1773569269697.png)
 
 ---
 
 ## 场景与训练闭环
 
 ### 1) 真实多人场景
+
 - 家庭饭桌
 - 商务饭局
 - 群面竞争
 
 ### 2) 多角色施压互动
+
 - 主导者、观察者、气氛组协同
 - 还原真实社交中的“多人动态压力”
 
 ### 3) 实时救场与反馈
+
 - 过程评分（自信度/平静度/紧张度等）
 - 一键救场建议，避免卡壳
 
 ### 4) 局后复盘
+
 - 多维评分 + 综合点评 + NPC 视角反馈
 - 从“这句说错了”到“下次怎么说更好”
 
@@ -78,7 +87,7 @@ TalkArena 不是普通聊天机器人，而是围绕“真实社交表达”打�
 - FastAPI 服务端 + 多 Agent 编排
 - 多模态状态融合（文本/语音/表情）
 - 结构化输出约束，降低对话跑偏
-- TTS 预取与串行播放，增强沉浸感
+- TTS 预取与串行播放，增强沉浸感（使用了FNLP的Moss模型）
 - 会话快照机制，提升稳定性
 
 ---
@@ -91,21 +100,26 @@ python main.py
 ```
 
 必需环境变量：
+
 - `SILICONFLOW_API_KEY`
 
 可选：
+
 - `SILICONFLOW_BASE_URL`
 - `LLM_MODEL`
 - `TALKARENA_FAST_MODE=1`
 
 默认访问：
+
 - 本地：`http://127.0.0.1:8000`
 - 线上：`https://talk-arena.vercel.app/`
 
 ---
 
 ## 🗺️ 产品愿景
+
 TalkArena 不只是一款“会聊天”的应用，而是一套可扩展的表达能力训练基础设施：
+
 - 职场新人沟通训练
 - 销售/谈判模拟训练
 - 面试与群面 Mock
@@ -116,4 +130,5 @@ TalkArena 不只是一款“会聊天”的应用，而是一套可扩展的表�
 ---
 
 ## 🤝 贡献与反馈
+
 欢迎提 Issue / PR，一起把这个项目打磨成真正有用、好玩、能落地的“表达训练引擎”。
